@@ -81,17 +81,15 @@ class QueryAgent:
             }}
             """
             
-            response = _client.chat.completions.create(
+            response = _client.responses.create(
                 model=Config.OPENAI_MODEL,
-                messages=[
-                    {"role": "system", "content": "You are a query analysis expert. Respond only with valid JSON."},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=300,
-                temperature=0.1
+                instructions="You are a query analysis expert. Respond only with valid JSON.",
+                input=prompt,
+                reasoning={"effort": "medium"},
+                text={"verbosity": "high"}
             )
             
-            analysis_text = response.choices[0].message.content.strip()
+            analysis_text = response.output_text.strip()
             
             # Try to parse as JSON
             try:
@@ -399,17 +397,15 @@ class QueryAgent:
         Call OpenAI API to generate response.
         """
         try:
-            response = _client.chat.completions.create(
+            response = _client.responses.create(
                 model=Config.OPENAI_MODEL,
-                messages=[
-                    {"role": "system", "content": "You are a helpful AI assistant that provides accurate, well-sourced responses based on the provided context."},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=Config.MAX_TOKENS,
-                temperature=0.3
+                instructions="You are a helpful AI assistant that provides accurate, well-sourced responses based on the provided context.",
+                input=prompt,
+                reasoning={"effort": "medium"},
+                text={"verbosity": "high"}
             )
             
-            return response.choices[0].message.content.strip()
+            return response.output_text.strip()
             
         except Exception as e:
             return f"I apologize, but I encountered an error while generating the response: {str(e)}"

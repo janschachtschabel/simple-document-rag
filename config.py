@@ -7,7 +7,7 @@ load_dotenv(override=False)
 class Config:
     # OpenAI Configuration - loaded from OS environment variables or .env file
     OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
-    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
     EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-ada-002")
     
     # ChromaDB Configuration

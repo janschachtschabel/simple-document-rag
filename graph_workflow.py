@@ -132,16 +132,15 @@ Antworte NUR mit einem JSON-Objekt:
 }}"""
         
         try:
-            response = _client.chat.completions.create(
+            response = _client.responses.create(
                 model=Config.OPENAI_MODEL,
-                messages=[
-                    {"role": "system", "content": "Du bist ein Query-Analyse-Experte. Antworte nur mit validem JSON."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0
+                instructions="Du bist ein Query-Analyse-Experte. Antworte nur mit validem JSON.",
+                input=prompt,
+                reasoning={"effort": "medium"},
+                text={"verbosity": "high"}
             )
             
-            analysis = json.loads(response.choices[0].message.content.strip())
+            analysis = json.loads(response.output_text.strip())
         except Exception as e:
             analysis = {
                 "query_type": "unknown",
@@ -185,16 +184,15 @@ Antworte NUR mit einem JSON-Array von 3-5 Strings:
 ["Query 1", "Query 2", ...]"""
         
         try:
-            response = _client.chat.completions.create(
+            response = _client.responses.create(
                 model=Config.OPENAI_MODEL,
-                messages=[
-                    {"role": "system", "content": "Du bist ein Query-Rewriting-Experte. Antworte nur mit einem JSON-Array."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.7
+                instructions="Du bist ein Query-Rewriting-Experte. Antworte nur mit einem JSON-Array.",
+                input=prompt,
+                reasoning={"effort": "medium"},
+                text={"verbosity": "high"}
             )
             
-            rewritten = json.loads(response.choices[0].message.content.strip())
+            rewritten = json.loads(response.output_text.strip())
             # Always include original query + up to 5 variants
             rewritten = [query] + rewritten[:5]
         except Exception as e:
@@ -405,17 +403,15 @@ WICHTIG: Falls die Frage mehrere Aspekte enthält, gehe auf JEDEN Aspekt ein und
 {length_instruction}"""
         
         try:
-            response = _client.chat.completions.create(
+            response = _client.responses.create(
                 model=Config.OPENAI_MODEL,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                max_tokens=Config.MAX_TOKENS,
-                temperature=0.3
+                instructions=system_prompt,
+                input=user_prompt,
+                reasoning={"effort": "medium"},
+                text={"verbosity": "high"}
             )
             
-            answer = response.choices[0].message.content
+            answer = response.output_text
         except Exception as e:
             answer = f"Fehler bei der Antwortgenerierung: {str(e)}"
         

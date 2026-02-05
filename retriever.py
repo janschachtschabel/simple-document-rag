@@ -288,17 +288,15 @@ class SemanticRetriever:
             Return only the ranking numbers (e.g., "3,1,4,2") without any explanation.
             """
             
-            response = _client.chat.completions.create(
+            response = _client.responses.create(
                 model=Config.OPENAI_MODEL,
-                messages=[
-                    {"role": "system", "content": "You are a helpful assistant that ranks documents by relevance."},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=100,
-                temperature=0
+                instructions="You are a helpful assistant that ranks documents by relevance.",
+                input=prompt,
+                reasoning={"effort": "medium"},
+                text={"verbosity": "high"}
             )
             
-            ranking_text = response.choices[0].message.content.strip()
+            ranking_text = response.output_text.strip()
             rankings = [int(x.strip()) - 1 for x in ranking_text.split(',')]
             
             if len(rankings) == len(documents) and set(rankings) == set(range(len(documents))):
@@ -610,18 +608,16 @@ Bewerte mit einer der folgenden Kategorien:
 Antworte NUR mit einem JSON-Objekt:
 {{"grade": "relevant|ambiguous|irrelevant", "confidence": 0.0-1.0, "reason": "kurze Begründung"}}"""
 
-            response = _client.chat.completions.create(
+            response = _client.responses.create(
                 model=Config.OPENAI_MODEL,
-                messages=[
-                    {"role": "system", "content": "Du bist ein Experte für Dokumentenrelevanz-Bewertung. Antworte nur mit validem JSON."},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=150,
-                temperature=0
+                instructions="Du bist ein Experte für Dokumentenrelevanz-Bewertung. Antworte nur mit validem JSON.",
+                input=prompt,
+                reasoning={"effort": "medium"},
+                text={"verbosity": "high"}
             )
             
             import json
-            result = json.loads(response.choices[0].message.content.strip())
+            result = json.loads(response.output_text.strip())
             result['document_id'] = document.get('id', 'unknown')
             result['method'] = 'llm'
             return result
