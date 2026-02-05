@@ -438,7 +438,8 @@ async def query_with_langgraph(request: LangGraphQueryRequest):
         result = workflow.run(
             query=request.question,
             max_attempts=request.max_attempts,
-            response_length=request.response_length
+            response_length=request.response_length,
+            include_confluence=request.include_confluence
         )
         
         return {

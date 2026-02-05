@@ -74,15 +74,15 @@ OPENAI_API_KEY=sk-your-openai-api-key-here
 ```env
 # OpenAI
 OPENAI_API_KEY=sk-your-openai-api-key-here
-OPENAI_MODEL=gpt-4o-mini
+OPENAI_MODEL=gpt-4.1-mini
 EMBEDDING_MODEL=text-embedding-ada-002
 
 # RAG Einstellungen
 CHROMA_PERSIST_DIRECTORY=./chroma_db
-MAX_TOKENS=4000
+MAX_TOKENS=30000
 CHUNK_SIZE=1000
 CHUNK_OVERLAP=200
-TOP_K_RETRIEVAL=5
+TOP_K_RETRIEVAL=200
 
 # Confluence (optional)
 CONFLUENCE_URL=https://your-domain.atlassian.net/wiki
@@ -323,43 +323,132 @@ print(data["sources"])
 ## 🏗️ Architektur
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Streamlit UI (app.py)                    │
-└─────────────────────────┬───────────────────────────────────┘
-                          │ HTTP
-┌─────────────────────────▼───────────────────────────────────┐
-│                  FastAPI Server (main.py)                   │
-└─────────────────────────┬───────────────────────────────────┘
-                          │
-        ┌─────────────────┼─────────────────┐
-        ▼                 ▼                 ▼
-┌───────────────┐ ┌───────────────┐ ┌───────────────┐
-│  LangGraph    │ │   Retriever   │ │  Confluence   │
-│  Workflow     │ │  (Hybrid+RRF) │ │    Loader     │
-└───────┬───────┘ └───────┬───────┘ └───────────────┘
-        │                 │
-        ▼                 ▼
-┌───────────────┐ ┌───────────────┐
-│  OpenAI LLM   │ │   ChromaDB    │
-│  (Generation) │ │  (Vectors)    │
-└───────────────┘ └───────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                        BENUTZER                                  │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                   STREAMLIT (app.py) - Port 8501                 │
+│  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐ │
+│  │  Chat UI   │  │  Upload    │  │  Quellen   │  │ Confluence │ │
+│  └────────────┘  └────────────┘  └────────────┘  └────────────┘ │
+└─────────────────────────────────────────────────────────────────┘
+                              │ HTTP (requests)
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    FASTAPI (main.py) - Port 8000                 │
+│  POST /query-langgraph │ POST /upload │ GET /sources │ ...      │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                       RAG PIPELINE                               │
+│  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐ │
+│  │ LangGraph  │  │ Retriever  │  │ ChromaDB   │  │ Confluence │ │
+│  │ Workflow   │  │ Hybrid+RRF │  │ VectorDB   │  │  Loader    │ │
+│  └────────────┘  └────────────┘  └────────────┘  └────────────┘ │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                        OPENAI API                                │
+│           gpt-4.1-mini (LLM) + text-embedding-ada-002           │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ### Komponenten
 
 | Komponente | Datei | Funktion |
 |------------|-------|----------|
-| Document Processor | `document_processor.py` | Dokumente parsen, chunken |
-| Embedding Engine | `embedding_engine.py` | Text → Vektoren |
-| Vector Database | `vector_database.py` | ChromaDB Wrapper |
-| Retriever | `retriever.py` | Hybrid-Suche, Reranking |
-| Graph Workflow | `graph_workflow.py` | LangGraph Query-Pipeline |
-| Confluence Loader | `confluence_loader.py` | Confluence-Integration |
-| RAG Pipeline | `rag_pipeline.py` | Orchestrierung |
+| **Streamlit UI** | `app.py` | Web-Oberfläche, Chat, Session-State |
+| **FastAPI Server** | `main.py` | REST-API, Request-Validierung |
+| **LangGraph Workflow** | `graph_workflow.py` | RAG-Pipeline Orchestrierung |
+| **Retriever** | `retriever.py` | Hybrid-Suche, Cross-Encoder Reranking |
+| **Vector Database** | `vector_db.py` | ChromaDB Wrapper für Embeddings |
+| **Document Processor** | `document_processor.py` | Dokumente parsen, chunken |
+| **Confluence Loader** | `confluence_loader.py` | Confluence-Integration |
+| **RAG Pipeline** | `rag_pipeline.py` | High-Level Orchestrierung |
 
 ---
 
-## 🔧 Fehlerbehebung
+## � RAG Workflow
+
+Der LangGraph-Workflow verarbeitet Anfragen in 5 Schritten:
+
+```
+START → analyze_query → rewrite_query → retrieve → grade_documents → generate_response → END
+```
+
+### 1. Query-Analyse (`analyze_query`)
+- Erkennt Query-Typ (factual, summary, comparison, analysis, etc.)
+- Bestimmt Komplexität (simple/moderate/complex)
+- Extrahiert Keywords für die Suche
+
+### 2. Query-Rewriting (`rewrite_query`)
+- Generiert 3-5 Query-Varianten für bessere Abdeckung
+- **Multi-Aspekt-Erkennung**: Fragen wie "LOM und IMS LD" werden in separate Queries aufgeteilt
+- Original-Query bleibt immer erhalten
+
+### 3. Retrieval (`retrieve`)
+- **Hybrid-Suche** für jede Query-Variante:
+  - Semantische Suche (Embeddings)
+  - BM25 Keyword-Suche
+  - RRF (Reciprocal Rank Fusion) zum Kombinieren
+- Boost (+50%) für Dokumente die von mehreren Queries gefunden werden
+- Bis zu 40/80/100 Dokumente je nach Komplexität
+
+### 4. Reranking (`grade_documents`)
+- **Cross-Encoder** (mmarco-mMiniLMv2) für präzises Relevanz-Scoring
+- Score-Bereich: -10 bis +10 (normalisiert auf 0-100%)
+- Nur Sortierung, kein Filtering (alle Dokumente bleiben erhalten)
+
+### 5. Antwort-Generierung (`generate_response`)
+- **40 Chunks** für normale Anfragen
+- **80 Chunks** für Zusammenfassungen/Übersichten
+- System-Prompt mit Multi-Aspekt-Anweisung
+- gpt-4.1-mini mit max. 30.000 Tokens
+
+---
+
+## 📦 Bibliotheken & Tools
+
+### Web-Framework
+| Bibliothek | Zweck |
+|------------|-------|
+| FastAPI | REST-API Backend |
+| Uvicorn | ASGI Server |
+| Streamlit | Web-UI Frontend |
+
+### LLM & RAG
+| Bibliothek | Zweck |
+|------------|-------|
+| LangChain | LLM-Abstraktion, Document Loaders |
+| LangGraph (≥0.2.0) | Workflow-Orchestrierung |
+| OpenAI | API-Client (gpt-4.1-mini, ada-002) |
+
+### Vector DB & Search
+| Bibliothek | Zweck |
+|------------|-------|
+| ChromaDB | Vektor-Datenbank |
+| Sentence-Transformers | Cross-Encoder Reranking |
+| Rank-BM25 | Keyword-Suche |
+
+### Dokument-Verarbeitung
+| Bibliothek | Zweck |
+|------------|-------|
+| Markitdown[all] | Universal-Converter (PDF, DOCX, PPTX, etc.) |
+| BeautifulSoup4 | HTML-Parsing |
+
+### Confluence-Integration
+| Bibliothek | Zweck |
+|------------|-------|
+| LangChain-Community | ConfluenceLoader |
+| Atlassian-Python-API | Confluence API-Client |
+
+---
+
+## �🔧 Fehlerbehebung
 
 ### API startet nicht
 ```bash

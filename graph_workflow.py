@@ -21,6 +21,7 @@ from openai import OpenAI
 from config import Config
 from retriever import SemanticRetriever
 from vector_db import VectorDatabase
+from confluence_loader import get_confluence_retriever, confluence_available
 
 # Initialize OpenAI client
 _client = OpenAI()
@@ -50,6 +51,9 @@ class RAGState(TypedDict):
     
     # Metadata
     workflow_log: Annotated[List[str], add]
+    
+    # Confluence
+    include_confluence: bool
 
 
 class RAGWorkflow:
@@ -205,6 +209,7 @@ Antworte NUR mit einem JSON-Array von 3-5 Strings:
         """Retrieve documents using hybrid search with all query variants."""
         queries = state.get("rewritten_queries", [state["original_query"]])
         analysis = state.get("query_analysis", {})
+        include_confluence = state.get("include_confluence", False)
         
         # Adaptive k based on complexity - hoch genug für max_chunks (40/80)
         complexity = analysis.get("complexity", "moderate")
@@ -230,6 +235,31 @@ Antworte NUR mit einem JSON-Array von 3-5 Strings:
                     new_score = doc.get("rrf_score", 0)
                     all_results[doc_id]["rrf_score"] = existing_score + new_score * 0.5
         
+        # Include Confluence results if enabled
+        confluence_count = 0
+        if include_confluence and confluence_available():
+            confluence_retriever = get_confluence_retriever()
+            for query in queries:
+                try:
+                    confluence_docs = confluence_retriever.search(query, max_results=10)
+                    for doc in confluence_docs:
+                        # Create unique ID for Confluence docs
+                        doc_id = f"confluence_{doc.get('metadata', {}).get('page_id', '')}"
+                        if doc_id not in all_results:
+                            all_results[doc_id] = {
+                                "id": doc_id,
+                                "text": doc.get("text", ""),
+                                "metadata": doc.get("metadata", {}),
+                                "rrf_score": 0.5,  # Base score for Confluence docs
+                                "source_type": "confluence"
+                            }
+                            confluence_count += 1
+                        else:
+                            # Boost if found by multiple queries
+                            all_results[doc_id]["rrf_score"] += 0.25
+                except Exception as e:
+                    print(f"Confluence search error: {e}")
+        
         # Sort by combined score and take top results
         sorted_results = sorted(
             all_results.values(), 
@@ -237,10 +267,14 @@ Antworte NUR mit einem JSON-Array von 3-5 Strings:
             reverse=True
         )[:top_k]
         
+        log_msg = f"[Retrieve] Found {len(sorted_results)} documents using {len(queries)} query variants"
+        if confluence_count > 0:
+            log_msg += f" (+{confluence_count} from Confluence)"
+        
         return {
             "retrieved_docs": sorted_results,
             "retrieval_attempts": state.get("retrieval_attempts", 0) + 1,
-            "workflow_log": [f"[Retrieve] Found {len(sorted_results)} documents using {len(queries)} query variants"]
+            "workflow_log": [log_msg]
         }
     
     def _node_grade_documents(self, state: RAGState) -> Dict[str, Any]:
@@ -387,7 +421,7 @@ WICHTIG: Falls die Frage mehrere Aspekte enthält, gehe auf JEDEN Aspekt ein und
     
     # ==================== PUBLIC INTERFACE ====================
     
-    def run(self, query: str, max_attempts: int = 2, response_length: str = "normal") -> Dict[str, Any]:
+    def run(self, query: str, max_attempts: int = 2, response_length: str = "normal", include_confluence: bool = False) -> Dict[str, Any]:
         """
         Run the RAG workflow for a given query.
         
@@ -411,7 +445,8 @@ WICHTIG: Falls die Frage mehrere Aspekte enthält, gehe auf JEDEN Aspekt ein und
             "response": "",
             "sources": [],
             "workflow_log": [],
-            "response_length": response_length
+            "response_length": response_length,
+            "include_confluence": include_confluence
         }
         
         # Execute the graph
