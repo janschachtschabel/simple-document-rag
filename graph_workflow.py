@@ -115,6 +115,7 @@ class RAGWorkflow:
 2. Schlüssel-Entitäten/Themen
 3. Komplexität (simple, moderate, complex)
 4. Erwartetes Antwortformat
+5. WICHTIG: Zerlege die Anfrage in einzelne Aspekte/Teilfragen, falls mehrere enthalten sind
 
 Anfrage: "{query}"
 
@@ -124,7 +125,8 @@ Antworte NUR mit einem JSON-Objekt:
     "entities": ["...", "..."],
     "complexity": "...",
     "response_format": "...",
-    "keywords": ["...", "..."]
+    "keywords": ["...", "..."],
+    "sub_queries": ["Teilfrage 1", "Teilfrage 2"]
 }}"""
         
         try:
@@ -144,7 +146,8 @@ Antworte NUR mit einem JSON-Objekt:
                 "entities": [],
                 "complexity": "moderate",
                 "response_format": "text",
-                "keywords": query.split()[:5]
+                "keywords": query.split()[:5],
+                "sub_queries": [query]  # Fallback: Original-Query als einzige Sub-Query
             }
         
         return {
@@ -195,18 +198,25 @@ Antworte NUR mit einem JSON-Array von 3 Strings:
         }
     
     def _node_retrieve(self, state: RAGState) -> Dict[str, Any]:
-        """Retrieve documents using hybrid search with all query variants."""
+        """Retrieve documents using hybrid search with all query variants AND sub-queries."""
         queries = state.get("rewritten_queries", [state["original_query"]])
         analysis = state.get("query_analysis", {})
         
-        # Adaptive k based on complexity
+        # WICHTIG: Sub-Queries für Multi-Aspekt-Fragen hinzufügen
+        sub_queries = analysis.get("sub_queries", [])
+        if sub_queries:
+            queries = list(set(queries + sub_queries))  # Duplikate vermeiden
+        
+        # Adaptive k based on complexity - höher für Multi-Aspekt
         complexity = analysis.get("complexity", "moderate")
+        num_aspects = len(sub_queries) if sub_queries else 1
+        
         if complexity == "simple":
-            top_k = 5
+            top_k = 10 * num_aspects
         elif complexity == "complex":
-            top_k = 12
+            top_k = 25 * num_aspects
         else:
-            top_k = 8
+            top_k = 15 * num_aspects
         
         # Collect results from all query variants
         all_results = {}
@@ -303,8 +313,15 @@ Antworte NUR mit einem JSON-Array von 3 Strings:
             context_parts.append(f"[Dokument {i+1}]:\n{text}")
             
             # Get relevance score from Cross-Encoder or similarity score
-            score = doc.get("cross_encoder_score") or doc.get("similarity_score", 0)
-            relevance_pct = f"{score:.0%}" if score else "N/A"
+            cross_score = doc.get("cross_encoder_score")
+            if cross_score is not None:
+                # Cross-Encoder scores: -10 bis +10 → normalisieren auf 0-100%
+                normalized = (cross_score + 10) / 20  # -10→0, +10→1
+                relevance_pct = f"{max(0, min(100, normalized * 100)):.0f}%"
+            elif doc.get("similarity_score"):
+                relevance_pct = f"{doc['similarity_score']:.0%}"
+            else:
+                relevance_pct = "N/A"
             
             sources.append({
                 "id": doc.get("id", f"doc_{i}"),
@@ -329,15 +346,18 @@ Antworte NUR mit einem JSON-Array von 3 Strings:
 - Antworte NUR basierend auf den bereitgestellten Dokumenten
 - Wenn die Dokumente keine Antwort enthalten, sage das ehrlich
 - Zitiere relevante Teile der Dokumente
+- WICHTIG: Wenn die Frage mehrere Aspekte oder Teilfragen enthält, beantworte JEDEN Aspekt einzeln und strukturiert
 - Query-Typ: {query_type}
-- WICHTIG: {length_instruction}"""
+- {length_instruction}"""
         
         user_prompt = f"""DOKUMENTE:
 {context}
 
 FRAGE: {query}
 
-Bitte beantworte die Frage basierend auf den obigen Dokumenten. {length_instruction}"""
+Bitte beantworte die Frage basierend auf den obigen Dokumenten.
+WICHTIG: Falls die Frage mehrere Aspekte enthält, gehe auf JEDEN Aspekt ein und strukturiere deine Antwort entsprechend.
+{length_instruction}"""
         
         try:
             response = _client.chat.completions.create(
