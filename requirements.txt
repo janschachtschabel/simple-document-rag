@@ -1,0 +1,26 @@
+fastapi
+uvicorn
+openai
+sentence-transformers
+chromadb
+python-multipart>
+jinja2
+aiofiles
+pydantic
+numpy
+pandas
+python-dotenv
+langchain
+langchain-openai
+tiktoken
+beautifulsoup4
+# pdfplumber - replaced by markitdown
+
+# Confluence integration
+langchain-community
+atlassian-python-api
+streamlit
+rank-bm25
+langgraph>=0.2.0
+langchain-core>=0.3.0
+markitdown[all]
