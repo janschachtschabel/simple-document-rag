@@ -3,7 +3,7 @@ uvicorn
 openai
 sentence-transformers
 chromadb
-python-multipart>
+python-multipart
 jinja2
 aiofiles
 pydantic

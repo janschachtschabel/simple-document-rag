@@ -168,6 +168,32 @@ Buttons:
 - **💾 Speichern**: Konfiguration speichern
 - **🔍 Testen**: Verbindung prüfen
 
+#### 🔑 Confluence API-Token erstellen
+
+Confluence Cloud nutzt Atlassian API Tokens (kein OAuth nötig).
+
+**Voraussetzungen:**
+- Confluence Cloud (nicht Server / Data Center)
+- Atlassian-Account mit Zugriff auf das Confluence-Space
+
+**Schritte:**
+
+1. Öffnen Sie die Token-Verwaltung:
+   
+   👉 https://id.atlassian.com/manage-profile/security/api-tokens
+
+2. Klicken Sie auf **"Create API token"**
+
+3. Vergeben Sie einen Namen (z.B. "RAG Wissensdatenbank")
+
+4. Klicken Sie auf **"Create"**
+
+5. **Kopieren Sie das Token sofort** (wird nur einmal angezeigt!)
+
+6. Tragen Sie das Token in der App unter 🔷 Confluence ein
+
+> ⚠️ **Wichtig**: Das Token hat dieselben Berechtigungen wie Ihr Account. Teilen Sie es nicht!
+
 ---
 
 ## 📑 Seitenleiste - Meine Quellen
