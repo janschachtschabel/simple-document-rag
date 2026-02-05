@@ -188,7 +188,7 @@ def generate_document(toc_entries: List[str], document_title: str) -> Dict[str, 
     """Generate a document from TOC entries."""
     try:
         payload = {"toc_entries": toc_entries, "document_title": document_title}
-        timeout = max(600, len(toc_entries) * 60)
+        timeout = max(600, len(toc_entries) * 180)  # 3 Minuten pro Inhaltsverzeichnis-Eintrag
         response = requests.post(f"{API_BASE_URL}/generate-document", json=payload, timeout=timeout)
         return response.json()
     except requests.exceptions.Timeout:

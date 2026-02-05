@@ -14,7 +14,7 @@ class Config:
     CHROMA_PERSIST_DIRECTORY = os.getenv("CHROMA_PERSIST_DIRECTORY", "./chroma_db")
     
     # Document Processing
-    MAX_TOKENS = int(os.getenv("MAX_TOKENS", "15000"))
+    MAX_TOKENS = int(os.getenv("MAX_TOKENS", "30000"))
     CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1000"))
     CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "200"))
     

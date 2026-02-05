@@ -290,12 +290,16 @@ Antworte NUR mit einem JSON-Array von 3 Strings:
                 "workflow_log": ["[Generate] No relevant documents found"]
             }
         
-        # Prepare context
+        # Prepare context - mehr Chunks für Übersichts-/Zusammenfassungsfragen
+        query_type = analysis.get("query_type", "general")
+        is_overview_query = query_type in ["summary", "overview", "comparison", "analysis"]
+        max_chunks = 80 if is_overview_query else 40
+        
         context_parts = []
         sources = []
         
-        for i, doc in enumerate(docs[:6]):
-            text = doc.get("text", "")[:1500]
+        for i, doc in enumerate(docs[:max_chunks]):
+            text = doc.get("text", "")  # Chunks sind bereits auf CHUNK_SIZE begrenzt
             context_parts.append(f"[Dokument {i+1}]:\n{text}")
             
             # Get relevance score from Cross-Encoder or similarity score
@@ -311,7 +315,6 @@ Antworte NUR mit einem JSON-Array von 3 Strings:
         context = "\n\n".join(context_parts)
         
         # Generate response based on query type and length setting
-        query_type = analysis.get("query_type", "general")
         response_length = state.get("response_length", "normal")
         
         # Length instructions based on setting
