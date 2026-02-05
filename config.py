@@ -19,7 +19,7 @@ class Config:
     CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "200"))
     
     # Retrieval Configuration
-    TOP_K_RETRIEVAL = int(os.getenv("TOP_K_RETRIEVAL", "5"))
+    TOP_K_RETRIEVAL = int(os.getenv("TOP_K_RETRIEVAL", "200"))
     
     # Supported Document Types (via markitdown)
     SUPPORTED_EXTENSIONS = {
