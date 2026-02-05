@@ -115,7 +115,6 @@ class RAGWorkflow:
 2. Schlüssel-Entitäten/Themen
 3. Komplexität (simple, moderate, complex)
 4. Erwartetes Antwortformat
-5. WICHTIG: Zerlege die Anfrage in einzelne Aspekte/Teilfragen, falls mehrere enthalten sind
 
 Anfrage: "{query}"
 
@@ -125,8 +124,7 @@ Antworte NUR mit einem JSON-Objekt:
     "entities": ["...", "..."],
     "complexity": "...",
     "response_format": "...",
-    "keywords": ["...", "..."],
-    "sub_queries": ["Teilfrage 1", "Teilfrage 2"]
+    "keywords": ["...", "..."]
 }}"""
         
         try:
@@ -146,8 +144,7 @@ Antworte NUR mit einem JSON-Objekt:
                 "entities": [],
                 "complexity": "moderate",
                 "response_format": "text",
-                "keywords": query.split()[:5],
-                "sub_queries": [query]  # Fallback: Original-Query als einzige Sub-Query
+                "keywords": query.split()[:5]
             }
         
         return {
@@ -167,14 +164,21 @@ Antworte NUR mit einem JSON-Objekt:
         else:
             instruction = "Generiere Varianten mit Synonymen und unterschiedlichen Perspektiven."
         
-        prompt = f"""Generiere 3 verschiedene Umformulierungen der folgenden Anfrage für bessere Dokumenten-Suche.
-{instruction}
+        prompt = f"""Generiere verschiedene Such-Queries für die folgende Anfrage.
+
+WICHTIG: Wenn die Anfrage MEHRERE Aspekte/Themen enthält, erstelle für JEDEN Aspekt eine separate Query!
+
+Beispiel:
+- Anfrage: "Gib mir eine Übersicht der Relationen für LOM und IMS LD"
+- Queries: ["Relationen für LOM", "Relationen für IMS LD", "LOM Beziehungen", "IMS LD Beziehungen"]
 
 Original-Anfrage: "{query}"
 Schlüsselwörter aus Analyse: {analysis.get('keywords', [])}
 
-Antworte NUR mit einem JSON-Array von 3 Strings:
-["Variante 1", "Variante 2", "Variante 3"]"""
+{instruction}
+
+Antworte NUR mit einem JSON-Array von 3-5 Strings:
+["Query 1", "Query 2", ...]"""
         
         try:
             response = _client.chat.completions.create(
@@ -187,8 +191,8 @@ Antworte NUR mit einem JSON-Array von 3 Strings:
             )
             
             rewritten = json.loads(response.choices[0].message.content.strip())
-            # Always include original query
-            rewritten = [query] + rewritten[:3]
+            # Always include original query + up to 5 variants
+            rewritten = [query] + rewritten[:5]
         except Exception as e:
             rewritten = [query]
         
@@ -198,25 +202,18 @@ Antworte NUR mit einem JSON-Array von 3 Strings:
         }
     
     def _node_retrieve(self, state: RAGState) -> Dict[str, Any]:
-        """Retrieve documents using hybrid search with all query variants AND sub-queries."""
+        """Retrieve documents using hybrid search with all query variants."""
         queries = state.get("rewritten_queries", [state["original_query"]])
         analysis = state.get("query_analysis", {})
         
-        # WICHTIG: Sub-Queries für Multi-Aspekt-Fragen hinzufügen
-        sub_queries = analysis.get("sub_queries", [])
-        if sub_queries:
-            queries = list(set(queries + sub_queries))  # Duplikate vermeiden
-        
-        # Adaptive k based on complexity - höher für Multi-Aspekt
+        # Adaptive k based on complexity - hoch genug für max_chunks (40/80)
         complexity = analysis.get("complexity", "moderate")
-        num_aspects = len(sub_queries) if sub_queries else 1
-        
         if complexity == "simple":
-            top_k = 10 * num_aspects
+            top_k = 40
         elif complexity == "complex":
-            top_k = 25 * num_aspects
+            top_k = 100
         else:
-            top_k = 15 * num_aspects
+            top_k = 80
         
         # Collect results from all query variants
         all_results = {}

@@ -21,7 +21,7 @@ st.markdown("""
 <style>
     /* Sidebar wider for all tabs */
     [data-testid="stSidebar"] {
-        min-width: 350px;
+        min-width: 400px;
     }
     
     /* Main container styling */
