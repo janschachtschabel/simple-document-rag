@@ -33,7 +33,7 @@ st.markdown("""
     
     /* Header styling */
     .main-header {
-        font-size: 1.75rem;
+        font-size: 2.5rem;
         font-weight: 600;
         color: #1976d2;
         margin-bottom: 0.5rem;
@@ -230,11 +230,6 @@ def main():
     
     # ==================== SIDEBAR ====================
     with st.sidebar:
-        # Logo and title
-        st.markdown("## 📚 Wissensdatenbank")
-        st.caption("Intelligente Dokumentenanalyse mit KI")
-        
-        st.divider()
         
         # === DOCUMENT UPLOAD SECTION ===
         st.markdown("### ➕ Quellen hinzufügen")

@@ -298,10 +298,14 @@ Antworte NUR mit einem JSON-Array von 3 Strings:
             text = doc.get("text", "")[:1500]
             context_parts.append(f"[Dokument {i+1}]:\n{text}")
             
+            # Get relevance score from Cross-Encoder or similarity score
+            score = doc.get("cross_encoder_score") or doc.get("similarity_score", 0)
+            relevance_pct = f"{score:.0%}" if score else "N/A"
+            
             sources.append({
                 "id": doc.get("id", f"doc_{i}"),
                 "text": text[:300] + "...",
-                "relevance": doc.get("relevance_grade", {}).get("grade", "unknown")
+                "relevance": relevance_pct
             })
         
         context = "\n\n".join(context_parts)
