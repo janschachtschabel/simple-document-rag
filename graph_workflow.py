@@ -237,6 +237,17 @@ Antworte NUR mit einem JSON-Array von 3-5 Strings:
         
         # Include Confluence results if enabled
         confluence_count = 0
+        confluence_log = []
+        if include_confluence:
+            confluence_log.append(f"[Confluence] include_confluence=True")
+            is_available = confluence_available()
+            confluence_log.append(f"[Confluence] confluence_available()={is_available}")
+            if is_available:
+                confluence_retriever = get_confluence_retriever()
+                confluence_log.append(f"[Confluence] Configured: url={confluence_retriever.url}, space={confluence_retriever.space_key}")
+            else:
+                confluence_log.append("[Confluence] Not available or not configured")
+        
         if include_confluence and confluence_available():
             confluence_retriever = get_confluence_retriever()
             for query in queries:
@@ -271,10 +282,13 @@ Antworte NUR mit einem JSON-Array von 3-5 Strings:
         if confluence_count > 0:
             log_msg += f" (+{confluence_count} from Confluence)"
         
+        # Combine all log messages
+        all_logs = [log_msg] + confluence_log
+        
         return {
             "retrieved_docs": sorted_results,
             "retrieval_attempts": state.get("retrieval_attempts", 0) + 1,
-            "workflow_log": [log_msg]
+            "workflow_log": all_logs
         }
     
     def _node_grade_documents(self, state: RAGState) -> Dict[str, Any]:

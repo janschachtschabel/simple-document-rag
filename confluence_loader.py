@@ -1,5 +1,5 @@
 """
-Confluence integration for RAG system using LangChain.
+Confluence integration for RAG system using Atlassian API directly.
 Allows searching and loading documents from Confluence spaces.
 """
 
@@ -7,13 +7,13 @@ from typing import List, Dict, Any, Optional
 import os
 from config import Config
 
-# LangChain Confluence Loader
+# Try Atlassian API directly (more reliable than LangChain wrapper)
 try:
-    from langchain_community.document_loaders import ConfluenceLoader
+    from atlassian import Confluence
     CONFLUENCE_AVAILABLE = True
 except ImportError:
     CONFLUENCE_AVAILABLE = False
-    print("Warning: langchain-community not installed. Run: pip install langchain-community atlassian-python-api")
+    print("Warning: atlassian-python-api not installed. Run: pip install atlassian-python-api")
 
 
 class ConfluenceRetriever:
@@ -36,10 +36,10 @@ class ConfluenceRetriever:
         """Check if Confluence is properly configured."""
         return bool(self.url and self.username and self.api_key)
     
-    def _get_loader(self) -> Optional[ConfluenceLoader]:
-        """Get or create the Confluence loader."""
+    def _get_client(self) -> Optional[Confluence]:
+        """Get or create the Confluence API client."""
         if not CONFLUENCE_AVAILABLE:
-            print("Confluence loader not available")
+            print("Confluence API not available - install atlassian-python-api")
             return None
         
         if not self.is_configured():
@@ -48,32 +48,33 @@ class ConfluenceRetriever:
         
         if self._loader is None:
             try:
-                self._loader = ConfluenceLoader(
+                self._loader = Confluence(
                     url=self.url,
                     username=self.username,
-                    api_key=self.api_key,
+                    password=self.api_key,  # API token is used as password
                     cloud=self.is_cloud
                 )
                 self._initialized = True
+                print(f"Confluence client initialized for {self.url}")
             except Exception as e:
-                print(f"Failed to initialize Confluence loader: {e}")
+                print(f"Failed to initialize Confluence client: {e}")
                 return None
         
         return self._loader
     
     def search(self, query: str, max_results: int = 5) -> List[Dict[str, Any]]:
         """
-        Search Confluence for documents matching the query.
+        Search Confluence for documents matching the query using Atlassian API.
         
         Args:
-            query: Search query (CQL or text)
+            query: Search query text
             max_results: Maximum number of results
             
         Returns:
             List of documents with text and metadata
         """
-        loader = self._get_loader()
-        if not loader:
+        client = self._get_client()
+        if not client:
             return []
         
         try:
@@ -82,35 +83,66 @@ class ConfluenceRetriever:
             if self.space_key:
                 cql = f'space = "{self.space_key}" AND {cql}'
             
-            docs = loader.load(
-                cql=cql,
-                limit=max_results,
-                max_pages=max_results
-            )
+            # Search using Atlassian API directly
+            search_results = client.cql(cql, limit=max_results)
             
             results = []
-            for doc in docs:
-                results.append({
-                    'text': doc.page_content,
-                    'metadata': {
-                        'source': doc.metadata.get('source', 'confluence'),
-                        'title': doc.metadata.get('title', 'Confluence Page'),
-                        'source_type': 'confluence',
-                        'page_id': doc.metadata.get('id', ''),
-                        'space': doc.metadata.get('space', self.space_key),
-                        'url': doc.metadata.get('source', self.url)
-                    }
-                })
+            pages = search_results.get('results', [])
             
+            for page in pages:
+                try:
+                    # Get page content
+                    content = page.get('content', {})
+                    page_id = content.get('id', page.get('id', ''))
+                    title = content.get('title', page.get('title', 'Confluence Page'))
+                    
+                    # Get the page body if available
+                    page_text = ""
+                    if page_id:
+                        try:
+                            page_content = client.get_page_by_id(page_id, expand='body.storage')
+                            body = page_content.get('body', {}).get('storage', {}).get('value', '')
+                            # Strip HTML tags for plain text
+                            import re
+                            page_text = re.sub('<[^<]+?>', ' ', body)
+                            page_text = ' '.join(page_text.split())[:2000]  # Limit length
+                        except Exception as e:
+                            print(f"Could not get page content for {page_id}: {e}")
+                            page_text = page.get('excerpt', title)
+                    else:
+                        page_text = page.get('excerpt', title)
+                    
+                    # Build page URL
+                    space_key = content.get('space', {}).get('key', self.space_key) if isinstance(content.get('space'), dict) else self.space_key
+                    page_url = f"{self.url}/wiki/spaces/{space_key}/pages/{page_id}" if page_id else self.url
+                    
+                    results.append({
+                        'text': page_text,
+                        'metadata': {
+                            'source': f"confluence:{title}",
+                            'title': title,
+                            'source_type': 'confluence',
+                            'page_id': str(page_id),
+                            'space': space_key,
+                            'url': page_url
+                        }
+                    })
+                except Exception as e:
+                    print(f"Error processing Confluence page: {e}")
+                    continue
+            
+            print(f"Confluence search returned {len(results)} results for query: {query[:50]}...")
             return results
             
         except Exception as e:
+            import traceback
             print(f"Confluence search failed: {e}")
+            print(traceback.format_exc())
             return []
     
     def load_space(self, space_key: str = None, max_pages: int = 100) -> List[Dict[str, Any]]:
         """
-        Load all pages from a Confluence space.
+        Load all pages from a Confluence space using Atlassian API.
         
         Args:
             space_key: Confluence space key (uses configured default if not provided)
@@ -119,8 +151,8 @@ class ConfluenceRetriever:
         Returns:
             List of documents
         """
-        loader = self._get_loader()
-        if not loader:
+        client = self._get_client()
+        if not client:
             return []
         
         space = space_key or self.space_key
@@ -129,23 +161,24 @@ class ConfluenceRetriever:
             return []
         
         try:
-            docs = loader.load(
-                space_key=space,
-                max_pages=max_pages,
-                include_attachments=False
-            )
+            import re
+            pages = client.get_all_pages_from_space(space, limit=max_pages, expand='body.storage')
             
             results = []
-            for doc in docs:
+            for page in pages:
+                body = page.get('body', {}).get('storage', {}).get('value', '')
+                page_text = re.sub('<[^<]+?>', ' ', body)
+                page_text = ' '.join(page_text.split())[:2000]
+                
                 results.append({
-                    'text': doc.page_content,
+                    'text': page_text,
                     'metadata': {
-                        'source': f"confluence:{space}:{doc.metadata.get('title', 'unknown')}",
-                        'title': doc.metadata.get('title', 'Confluence Page'),
+                        'source': f"confluence:{space}:{page.get('title', 'unknown')}",
+                        'title': page.get('title', 'Confluence Page'),
                         'source_type': 'confluence',
-                        'page_id': doc.metadata.get('id', ''),
+                        'page_id': page.get('id', ''),
                         'space': space,
-                        'url': doc.metadata.get('source', self.url)
+                        'url': f"{self.url}/wiki/spaces/{space}/pages/{page.get('id', '')}"
                     }
                 })
             
@@ -156,25 +189,28 @@ class ConfluenceRetriever:
             return []
     
     def load_page(self, page_id: str) -> Optional[Dict[str, Any]]:
-        """Load a specific Confluence page by ID."""
-        loader = self._get_loader()
-        if not loader:
+        """Load a specific Confluence page by ID using Atlassian API."""
+        client = self._get_client()
+        if not client:
             return None
         
         try:
-            docs = loader.load(page_ids=[page_id])
-            if docs:
-                doc = docs[0]
-                return {
-                    'text': doc.page_content,
-                    'metadata': {
-                        'source': f"confluence:{page_id}",
-                        'title': doc.metadata.get('title', 'Confluence Page'),
-                        'source_type': 'confluence',
-                        'page_id': page_id,
-                        'url': doc.metadata.get('source', self.url)
-                    }
+            import re
+            page = client.get_page_by_id(page_id, expand='body.storage')
+            body = page.get('body', {}).get('storage', {}).get('value', '')
+            page_text = re.sub('<[^<]+?>', ' ', body)
+            page_text = ' '.join(page_text.split())
+            
+            return {
+                'text': page_text,
+                'metadata': {
+                    'source': f"confluence:{page_id}",
+                    'title': page.get('title', 'Confluence Page'),
+                    'source_type': 'confluence',
+                    'page_id': page_id,
+                    'url': f"{self.url}/wiki/pages/{page_id}"
                 }
+            }
         except Exception as e:
             print(f"Failed to load Confluence page {page_id}: {e}")
         

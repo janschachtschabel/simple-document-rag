@@ -297,6 +297,16 @@ def main():
         with confluence_tab:
             st.caption("Verbinde mit Atlassian Confluence")
             
+            # Confluence search toggle - prominently at top, default ON
+            include_confluence = st.checkbox(
+                "✅ Confluence in Suche einbeziehen",
+                value=st.session_state.get("include_confluence", True),
+                help="Wenn aktiviert, wird Confluence bei jeder Suche mit durchsucht"
+            )
+            st.session_state.include_confluence = include_confluence
+            
+            st.divider()
+            
             # Load existing config from session or defaults
             conf_url = st.text_input(
                 "Confluence URL",
@@ -442,18 +452,15 @@ def main():
         )
         st.session_state.response_length = response_length
         
-        # Confluence option
+        # Confluence status display (checkbox is now in Confluence tab)
         confluence_status = get_confluence_status()
         if confluence_status.get("configured"):
-            include_confluence = st.checkbox(
-                "🔗 Confluence durchsuchen",
-                value=st.session_state.get("include_confluence", False),
-                help=f"Confluence: {confluence_status.get('url', 'N/A')}"
-            )
-            st.session_state.include_confluence = include_confluence
+            if st.session_state.get("include_confluence", True):
+                st.success("🔗 Confluence aktiv")
+            else:
+                st.caption("🔗 Confluence deaktiviert")
         else:
             st.caption("🔗 Confluence nicht konfiguriert")
-            st.session_state.include_confluence = False
         
         # Clear chat button
         if st.button("🧹 Chat leeren", use_container_width=True):
