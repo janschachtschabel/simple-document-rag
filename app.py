@@ -19,6 +19,11 @@ API_BASE_URL = "http://localhost:8000"
 # Custom CSS for better UX (compatible with light and dark mode)
 st.markdown("""
 <style>
+    /* Sidebar wider for all tabs */
+    [data-testid="stSidebar"] {
+        min-width: 350px;
+    }
+    
     /* Main container styling */
     .main .block-container {
         padding-top: 2rem;
