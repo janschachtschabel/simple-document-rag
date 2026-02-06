@@ -202,7 +202,7 @@ def generate_chapter(chapter_title: str, document_title: str) -> Dict[str, Any]:
         # Normalize chapter title (replace unicode dashes with regular ones)
         clean_title = chapter_title.replace("‑", "-").replace("–", "-").replace("—", "-")
         payload = {"chapter_title": clean_title, "document_title": document_title}
-        response = requests.post(f"{API_BASE_URL}/generate-chapter", json=payload, timeout=240)
+        response = requests.post(f"{API_BASE_URL}/generate-chapter", json=payload, timeout=600)
         result = response.json()
         # Ensure we have content even on partial success
         if "content" not in result or not result.get("content"):
