@@ -11,20 +11,60 @@ The workflow includes:
 - Response Generation
 """
 
-from typing import TypedDict, Annotated, List, Dict, Any, Optional
+from typing import TypedDict, Annotated, List, Dict, Any, Optional, Tuple
 from operator import add
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from langgraph.graph import StateGraph, END
-from openai import OpenAI
+from openai import OpenAI, AsyncOpenAI
+import asyncio
 
 from config import Config
 from retriever import SemanticRetriever
 from vector_db import VectorDatabase
 from confluence_loader import get_confluence_retriever, confluence_available
 
-# Initialize OpenAI client
+# Initialize OpenAI clients (sync + async)
 _client = OpenAI()
+_async_client = AsyncOpenAI()
+
+async def _async_llm_call(instructions: str, input_text: str) -> str:
+    """Async LLM call for parallel processing."""
+    response = await _async_client.responses.create(
+        model=Config.OPENAI_MODEL,
+        instructions=instructions,
+        input=input_text,
+        reasoning={"effort": Config.REASONING_EFFORT},
+        text={"verbosity": Config.VERBOSITY}
+    )
+    return response.output_text
+
+def run_async_llm_calls(calls: List[Tuple[str, str]]) -> List[str]:
+    """Run multiple LLM calls in parallel using async."""
+    async def run_all():
+        tasks = [_async_llm_call(instr, inp) for instr, inp in calls]
+        return await asyncio.gather(*tasks)
+    
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # If already in async context, use ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=Config.MAX_WORKERS) as executor:
+                results = list(executor.map(
+                    lambda x: _client.responses.create(
+                        model=Config.OPENAI_MODEL,
+                        instructions=x[0],
+                        input=x[1],
+                        reasoning={"effort": Config.REASONING_EFFORT},
+                        text={"verbosity": Config.VERBOSITY}
+                    ).output_text, calls))
+                return results
+        else:
+            return loop.run_until_complete(run_all())
+    except RuntimeError:
+        # No event loop, create one
+        return asyncio.run(run_all())
 
 
 class RAGState(TypedDict):
@@ -136,8 +176,8 @@ Antworte NUR mit einem JSON-Objekt:
                 model=Config.OPENAI_MODEL,
                 instructions="Du bist ein Query-Analyse-Experte. Antworte nur mit validem JSON.",
                 input=prompt,
-                reasoning={"effort": "medium"},
-                text={"verbosity": "high"}
+                reasoning={"effort": Config.REASONING_EFFORT},
+                text={"verbosity": Config.VERBOSITY}
             )
             
             analysis = json.loads(response.output_text.strip())
@@ -188,8 +228,8 @@ Antworte NUR mit einem JSON-Array von 3-5 Strings:
                 model=Config.OPENAI_MODEL,
                 instructions="Du bist ein Query-Rewriting-Experte. Antworte nur mit einem JSON-Array.",
                 input=prompt,
-                reasoning={"effort": "medium"},
-                text={"verbosity": "high"}
+                reasoning={"effort": Config.REASONING_EFFORT},
+                text={"verbosity": Config.VERBOSITY}
             )
             
             rewritten = json.loads(response.output_text.strip())
@@ -218,20 +258,25 @@ Antworte NUR mit einem JSON-Array von 3-5 Strings:
         else:
             top_k = 80
         
-        # Collect results from all query variants
+        # Collect results from all query variants IN PARALLEL
         all_results = {}
         
-        for query in queries:
-            results = self.retriever.hybrid_retrieve_rrf(query, top_k=top_k)
-            for doc in results:
-                doc_id = doc.get("id", "")
-                if doc_id not in all_results:
-                    all_results[doc_id] = doc
-                else:
-                    # Boost score if found by multiple queries
-                    existing_score = all_results[doc_id].get("rrf_score", 0)
-                    new_score = doc.get("rrf_score", 0)
-                    all_results[doc_id]["rrf_score"] = existing_score + new_score * 0.5
+        def retrieve_for_query(query):
+            return self.retriever.hybrid_retrieve_rrf(query, top_k=top_k)
+        
+        with ThreadPoolExecutor(max_workers=Config.MAX_WORKERS) as executor:
+            future_to_query = {executor.submit(retrieve_for_query, q): q for q in queries}
+            for future in as_completed(future_to_query):
+                results = future.result()
+                for doc in results:
+                    doc_id = doc.get("id", "")
+                    if doc_id not in all_results:
+                        all_results[doc_id] = doc
+                    else:
+                        # Boost score if found by multiple queries
+                        existing_score = all_results[doc_id].get("rrf_score", 0)
+                        new_score = doc.get("rrf_score", 0)
+                        all_results[doc_id]["rrf_score"] = existing_score + new_score * 0.5
         
         # Include Confluence results if enabled
         confluence_count = 0
@@ -248,9 +293,19 @@ Antworte NUR mit einem JSON-Array von 3-5 Strings:
         
         if include_confluence and confluence_available():
             confluence_retriever = get_confluence_retriever()
-            for query in queries:
+            
+            def search_confluence(query):
                 try:
-                    confluence_docs = confluence_retriever.search(query, max_results=10)
+                    return confluence_retriever.search(query, max_results=10)
+                except Exception as e:
+                    print(f"Confluence search error: {e}")
+                    return []
+            
+            # Parallel Confluence search
+            with ThreadPoolExecutor(max_workers=Config.MAX_WORKERS) as executor:
+                futures = {executor.submit(search_confluence, q): q for q in queries}
+                for future in as_completed(futures):
+                    confluence_docs = future.result()
                     for doc in confluence_docs:
                         # Create unique ID for Confluence docs
                         doc_id = f"confluence_{doc.get('metadata', {}).get('page_id', '')}"
@@ -266,8 +321,6 @@ Antworte NUR mit einem JSON-Array von 3-5 Strings:
                         else:
                             # Boost if found by multiple queries
                             all_results[doc_id]["rrf_score"] += 0.25
-                except Exception as e:
-                    print(f"Confluence search error: {e}")
         
         # Sort by combined score and take top results
         sorted_results = sorted(
@@ -407,8 +460,8 @@ WICHTIG: Falls die Frage mehrere Aspekte enthält, gehe auf JEDEN Aspekt ein und
                 model=Config.OPENAI_MODEL,
                 instructions=system_prompt,
                 input=user_prompt,
-                reasoning={"effort": "medium"},
-                text={"verbosity": "high"}
+                reasoning={"effort": Config.REASONING_EFFORT},
+                text={"verbosity": Config.VERBOSITY}
             )
             
             answer = response.output_text

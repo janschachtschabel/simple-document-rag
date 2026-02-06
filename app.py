@@ -196,6 +196,42 @@ def generate_document(toc_entries: List[str], document_title: str) -> Dict[str, 
     except Exception as e:
         return {"error": str(e)}
 
+def generate_chapter(chapter_title: str, document_title: str) -> Dict[str, Any]:
+    """Generate a single chapter."""
+    try:
+        # Normalize chapter title (replace unicode dashes with regular ones)
+        clean_title = chapter_title.replace("‑", "-").replace("–", "-").replace("—", "-")
+        payload = {"chapter_title": clean_title, "document_title": document_title}
+        response = requests.post(f"{API_BASE_URL}/generate-chapter", json=payload, timeout=240)
+        result = response.json()
+        # Ensure we have content even on partial success
+        if "content" not in result or not result.get("content"):
+            result["content"] = f"## {chapter_title}\n\n*Inhalt konnte nicht generiert werden.*\n\n"
+        return result
+    except requests.exceptions.Timeout:
+        return {"error": "Timeout", "chapter_title": chapter_title, "content": f"## {chapter_title}\n\n*Zeitüberschreitung bei Generierung.*\n\n"}
+    except Exception as e:
+        return {"error": str(e), "chapter_title": chapter_title, "content": f"## {chapter_title}\n\n*Fehler: {str(e)}*\n\n"}
+
+def save_document_auto(content: str, title: str) -> str:
+    """Auto-save document to prevent data loss."""
+    import os
+    from datetime import datetime
+    
+    # Create output directory if it doesn't exist
+    output_dir = "generated_documents"
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Generate filename with timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_title = title.replace(" ", "_").replace("/", "-")[:50]
+    filename = f"{output_dir}/{safe_title}_{timestamp}.md"
+    
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(content)
+    
+    return filename
+
 # ==================== HELPER FUNCTIONS ====================
 
 def get_file_icon(filename: str) -> str:
@@ -614,36 +650,70 @@ def main():
                 toc_entries = [e.strip() for e in toc_text.strip().split("\n") if e.strip()]
                 
                 if len(toc_entries) > 0:
-                    progress = st.progress(0)
+                    progress_bar = st.progress(0)
                     status = st.empty()
+                    chapter_preview = st.empty()
                     
-                    status.info(f"📝 Generiere Dokument mit {len(toc_entries)} Kapiteln...")
+                    # Initialize document
+                    full_document = f"# {doc_title}\n\n"
+                    all_sources = []
+                    chapter_results = {}
                     
-                    result = generate_document(toc_entries, doc_title)
-                    progress.progress(100)
+                    # Generate chapters IN PARALLEL
+                    from concurrent.futures import ThreadPoolExecutor, as_completed
                     
-                    if "error" in result:
-                        st.error(f"❌ {result['error']}")
-                    elif "full_document" in result:
-                        status.success(f"✅ Dokument '{doc_title}' erfolgreich generiert!")
+                    status.info(f"📝 Generiere {len(toc_entries)} Kapitel parallel...")
+                    
+                    def gen_chapter(args):
+                        idx, title = args
+                        return idx, generate_chapter(title, doc_title)
+                    
+                    with ThreadPoolExecutor(max_workers=min(5, len(toc_entries))) as executor:
+                        futures = {executor.submit(gen_chapter, (i, title)): i for i, title in enumerate(toc_entries)}
+                        completed = 0
                         
-                        # Download button
-                        st.download_button(
-                            "📥 Als Markdown herunterladen",
-                            data=result['full_document'],
-                            file_name=f"{doc_title.replace(' ', '_')}.md",
-                            mime="text/markdown",
-                            use_container_width=True
-                        )
-                        
-                        # Preview
-                        with st.expander("📖 Vorschau", expanded=True):
-                            st.markdown(result['full_document'])
-                        
-                        # Sources
-                        with st.expander(f"📚 {result.get('total_sources', 0)} Quellen verwendet"):
-                            for src in result.get('sources', [])[:20]:
-                                st.caption(f"• {src.get('title', src.get('source', 'Unbekannt'))}")
+                        for future in as_completed(futures):
+                            completed += 1
+                            progress_pct = int((completed / len(toc_entries)) * 100)
+                            progress_bar.progress(progress_pct)
+                            
+                            idx, chapter_result = future.result()
+                            chapter_results[idx] = chapter_result
+                            
+                            chapter_preview.markdown(f"**Fertig:** {completed}/{len(toc_entries)} Kapitel")
+                    
+                    # Assemble document in correct order
+                    for i, chapter_title in enumerate(toc_entries):
+                        chapter_result = chapter_results.get(i, {})
+                        chapter_content = chapter_result.get("content", f"## {chapter_title}\n\n*Inhalt nicht verfügbar*\n\n")
+                        full_document += chapter_content + "\n\n"
+                        all_sources.extend(chapter_result.get("sources", []))
+                    
+                    # Auto-save complete document
+                    saved_file = save_document_auto(full_document, doc_title)
+                    
+                    # Complete
+                    progress_bar.progress(100)
+                    status.success(f"✅ Dokument '{doc_title}' erfolgreich generiert! Auto-gespeichert: {saved_file}")
+                    
+                    # Download button
+                    st.download_button(
+                        "📥 Als Markdown herunterladen",
+                        data=full_document,
+                        file_name=f"{doc_title.replace(' ', '_')}.md",
+                        mime="text/markdown",
+                        use_container_width=True
+                    )
+                    
+                    # Preview
+                    with st.expander("📖 Vorschau", expanded=True):
+                        st.markdown(full_document)
+                    
+                    # Sources
+                    unique_sources = {s.get('source', s.get('title', '')): s for s in all_sources}.values()
+                    with st.expander(f"📚 {len(list(unique_sources))} Quellen verwendet"):
+                        for src in list(unique_sources)[:20]:
+                            st.caption(f"• {src.get('title', src.get('source', 'Unbekannt'))}")
                 else:
                     st.warning("⚠️ Bitte mindestens ein Kapitel eingeben.")
             else:

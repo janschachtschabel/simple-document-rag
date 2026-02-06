@@ -1,6 +1,7 @@
 from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from openai import OpenAI
 from rank_bm25 import BM25Okapi
 from vector_db import VectorDatabase
@@ -292,8 +293,8 @@ class SemanticRetriever:
                 model=Config.OPENAI_MODEL,
                 instructions="You are a helpful assistant that ranks documents by relevance.",
                 input=prompt,
-                reasoning={"effort": "medium"},
-                text={"verbosity": "high"}
+                reasoning={"effort": Config.REASONING_EFFORT},
+                text={"verbosity": Config.VERBOSITY}
             )
             
             ranking_text = response.output_text.strip()
@@ -612,8 +613,8 @@ Antworte NUR mit einem JSON-Objekt:
                 model=Config.OPENAI_MODEL,
                 instructions="Du bist ein Experte für Dokumentenrelevanz-Bewertung. Antworte nur mit validem JSON.",
                 input=prompt,
-                reasoning={"effort": "medium"},
-                text={"verbosity": "high"}
+                reasoning={"effort": Config.REASONING_EFFORT},
+                text={"verbosity": Config.VERBOSITY}
             )
             
             import json
@@ -689,10 +690,15 @@ Antworte NUR mit einem JSON-Objekt:
         if cross_encoder is not None:
             docs_to_grade = self._batch_grade_with_cross_encoder(query, docs_to_grade)
         else:
-            # Fallback to individual grading
-            for doc in docs_to_grade:
-                grade_result = self.grade_document_relevance(query, doc)
-                doc['relevance_grade'] = grade_result
+            # Fallback to PARALLEL LLM grading
+            def grade_single(doc):
+                return doc, self.grade_document_relevance(query, doc)
+            
+            with ThreadPoolExecutor(max_workers=Config.MAX_WORKERS) as executor:
+                futures = [executor.submit(grade_single, doc) for doc in docs_to_grade]
+                for future in as_completed(futures):
+                    doc, grade_result = future.result()
+                    doc['relevance_grade'] = grade_result
         
         # Categorize documents
         relevant_docs = []

@@ -54,6 +54,11 @@ class GenerateDocumentRequest(BaseModel):
     toc_entries: List[str]
     document_title: str = "Generated Document"
 
+class GenerateChapterRequest(BaseModel):
+    chapter_title: str
+    document_title: str = "Document"
+    previous_chapters: List[str] = []  # Context from previous chapters
+
 class CRAGQueryRequest(BaseModel):
     question: str
     top_k: Optional[int] = 5
@@ -332,6 +337,39 @@ async def generate_document(request: GenerateDocumentRequest):
             document_title=request.document_title
         )
         return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/generate-chapter")
+async def generate_chapter(request: GenerateChapterRequest):
+    """
+    Generate a single chapter for incremental document generation.
+    Allows progress tracking in the frontend.
+    """
+    try:
+        # Use the workflow for single chapter generation
+        workflow = get_langgraph_workflow()
+        
+        # Create a focused query for this chapter
+        query = f"Schreibe einen ausführlichen Abschnitt zum Thema: {request.chapter_title}"
+        if request.document_title:
+            query = f"Für das Dokument '{request.document_title}': {query}"
+        
+        result = workflow.run(
+            query=query,
+            max_attempts=2,
+            response_length="ausführlich",
+            include_confluence=True
+        )
+        
+        # Format as chapter (workflow returns 'answer' not 'response')
+        chapter_content = f"## {request.chapter_title}\n\n{result.get('answer', '')}"
+        
+        return {
+            "chapter_title": request.chapter_title,
+            "content": chapter_content,
+            "sources": result.get("sources", [])
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

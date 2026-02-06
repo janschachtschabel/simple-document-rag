@@ -10,6 +10,13 @@ class Config:
     OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
     EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-ada-002")
     
+    # GPT-5 API Parameters
+    REASONING_EFFORT = os.getenv("REASONING_EFFORT", "low")  # none, low, medium, high
+    VERBOSITY = os.getenv("VERBOSITY", "medium")  # low, medium, high
+    
+    # Parallel Processing
+    MAX_WORKERS = int(os.getenv("MAX_WORKERS", "5"))  # Max parallel LLM calls (reduced to prevent API overload)
+    
     # ChromaDB Configuration
     CHROMA_PERSIST_DIRECTORY = os.getenv("CHROMA_PERSIST_DIRECTORY", "./chroma_db")
     

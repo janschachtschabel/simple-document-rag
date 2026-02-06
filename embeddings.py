@@ -2,7 +2,11 @@ from openai import OpenAI
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from typing import List, Union
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from config import Config
+
+# Batch size for parallel embedding (OpenAI limit is ~2048 texts per call)
+EMBEDDING_BATCH_SIZE = 100
 
 class EmbeddingEngine:
     def __init__(self, model_name: str = None):
@@ -29,17 +33,44 @@ class EmbeddingEngine:
             return self._embed_sentence_transformer(text)
     
     def _embed_openai(self, text: Union[str, List[str]]) -> Union[np.ndarray, List[np.ndarray]]:
-        """Generate embeddings using OpenAI API v1.0+."""
-        if isinstance(text, str):
+        """Generate embeddings using OpenAI API v1.0+ with parallel batch processing."""
+        single_input = isinstance(text, str)
+        if single_input:
             text = [text]
         
+        # For small batches, single API call
+        if len(text) <= EMBEDDING_BATCH_SIZE:
+            embeddings = self._embed_batch(text)
+            return embeddings[0] if single_input else embeddings
+        
+        # For large batches, parallel processing
+        batches = [text[i:i + EMBEDDING_BATCH_SIZE] for i in range(0, len(text), EMBEDDING_BATCH_SIZE)]
+        all_embeddings = [None] * len(batches)
+        
+        with ThreadPoolExecutor(max_workers=Config.MAX_WORKERS) as executor:
+            future_to_idx = {executor.submit(self._embed_batch, batch): i for i, batch in enumerate(batches)}
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                all_embeddings[idx] = future.result()
+        
+        # Flatten results maintaining order
+        result = []
+        for batch_embeddings in all_embeddings:
+            if isinstance(batch_embeddings, list):
+                result.extend(batch_embeddings)
+            else:
+                result.append(batch_embeddings)
+        
+        return result[0] if single_input else result
+    
+    def _embed_batch(self, texts: List[str]) -> List[np.ndarray]:
+        """Embed a single batch of texts."""
         try:
             response = self._client.embeddings.create(
                 model=self.model_name,
-                input=text
+                input=texts
             )
-            embeddings = [np.array(item.embedding) for item in response.data]
-            return embeddings[0] if len(embeddings) == 1 else embeddings
+            return [np.array(item.embedding) for item in response.data]
         except Exception as e:
             raise Exception(f"OpenAI embedding error: {str(e)}")
     

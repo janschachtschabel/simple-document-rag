@@ -85,8 +85,8 @@ class QueryAgent:
                 model=Config.OPENAI_MODEL,
                 instructions="You are a query analysis expert. Respond only with valid JSON.",
                 input=prompt,
-                reasoning={"effort": "medium"},
-                text={"verbosity": "high"}
+                reasoning={"effort": Config.REASONING_EFFORT},
+                text={"verbosity": Config.VERBOSITY}
             )
             
             analysis_text = response.output_text.strip()
@@ -401,8 +401,8 @@ class QueryAgent:
                 model=Config.OPENAI_MODEL,
                 instructions="You are a helpful AI assistant that provides accurate, well-sourced responses based on the provided context.",
                 input=prompt,
-                reasoning={"effort": "medium"},
-                text={"verbosity": "high"}
+                reasoning={"effort": Config.REASONING_EFFORT},
+                text={"verbosity": Config.VERBOSITY}
             )
             
             return response.output_text.strip()
