@@ -8,14 +8,14 @@ class Config:
     # OpenAI Configuration - loaded from OS environment variables or .env file
     OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
     OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
-    EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-ada-002")
+    EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
     
     # GPT-5 API Parameters
     REASONING_EFFORT = os.getenv("REASONING_EFFORT", "low")  # none, low, medium, high
-    VERBOSITY = os.getenv("VERBOSITY", "medium")  # low, medium, high
+    VERBOSITY = os.getenv("VERBOSITY", "high")  # low, medium, high
     
     # Parallel Processing
-    MAX_WORKERS = int(os.getenv("MAX_WORKERS", "5"))  # Max parallel LLM calls (reduced to prevent API overload)
+    MAX_WORKERS = int(os.getenv("MAX_WORKERS", "20"))  # Max parallel LLM calls (OpenAI Tier-1: ~500 RPM)
     
     # ChromaDB Configuration
     CHROMA_PERSIST_DIRECTORY = os.getenv("CHROMA_PERSIST_DIRECTORY", "./chroma_db")

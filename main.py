@@ -58,6 +58,7 @@ class GenerateChapterRequest(BaseModel):
     chapter_title: str
     document_title: str = "Document"
     previous_chapters: List[str] = []  # Context from previous chapters
+    toc_entries: List[str] = []  # Full table of contents for context
 
 class CRAGQueryRequest(BaseModel):
     question: str
@@ -350,10 +351,18 @@ async def generate_chapter(request: GenerateChapterRequest):
         # Use the workflow for single chapter generation
         workflow = get_langgraph_workflow()
         
+        # Build TOC context if available
+        toc_context = ""
+        if request.toc_entries:
+            toc_lines = "\n".join(f"- {entry}" for entry in request.toc_entries)
+            toc_context = f"\n\nDas Gesamtdokument hat folgendes Inhaltsverzeichnis:\n{toc_lines}\n\nSchreibe jetzt den Abschnitt: {request.chapter_title}"
+        
         # Create a focused query for this chapter
         query = f"Schreibe einen ausführlichen Abschnitt zum Thema: {request.chapter_title}"
         if request.document_title:
             query = f"Für das Dokument '{request.document_title}': {query}"
+        if toc_context:
+            query += toc_context
         
         result = workflow.run(
             query=query,

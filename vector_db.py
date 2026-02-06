@@ -18,7 +18,7 @@ class VectorDatabase:
         """Initialize or get the collection."""
         try:
             self.collection = self.client.get_collection(name="documents")
-        except:
+        except Exception:
             self.collection = self.client.create_collection(
                 name="documents",
                 metadata={"hnsw:space": "cosine"}

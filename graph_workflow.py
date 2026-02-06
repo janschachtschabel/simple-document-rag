@@ -11,27 +11,24 @@ The workflow includes:
 - Response Generation
 """
 
-from typing import TypedDict, Annotated, List, Dict, Any, Optional, Tuple
+from typing import TypedDict, Annotated, List, Dict, Any, Optional
 from operator import add
 import json
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from langgraph.graph import StateGraph, END
-from openai import OpenAI, AsyncOpenAI
-import asyncio
 
 from config import Config
+from llm_client import client as _client, openai_retry as _openai_retry
 from retriever import SemanticRetriever
 from vector_db import VectorDatabase
 from confluence_loader import get_confluence_retriever, confluence_available
 
-# Initialize OpenAI clients (sync + async)
-_client = OpenAI()
-_async_client = AsyncOpenAI()
-
-async def _async_llm_call(instructions: str, input_text: str) -> str:
-    """Async LLM call for parallel processing."""
-    response = await _async_client.responses.create(
+@_openai_retry
+def _llm_call(instructions: str, input_text: str) -> str:
+    """LLM call with automatic retry on transient errors."""
+    response = _client.responses.create(
         model=Config.OPENAI_MODEL,
         instructions=instructions,
         input=input_text,
@@ -39,32 +36,6 @@ async def _async_llm_call(instructions: str, input_text: str) -> str:
         text={"verbosity": Config.VERBOSITY}
     )
     return response.output_text
-
-def run_async_llm_calls(calls: List[Tuple[str, str]]) -> List[str]:
-    """Run multiple LLM calls in parallel using async."""
-    async def run_all():
-        tasks = [_async_llm_call(instr, inp) for instr, inp in calls]
-        return await asyncio.gather(*tasks)
-    
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # If already in async context, use ThreadPoolExecutor
-            with ThreadPoolExecutor(max_workers=Config.MAX_WORKERS) as executor:
-                results = list(executor.map(
-                    lambda x: _client.responses.create(
-                        model=Config.OPENAI_MODEL,
-                        instructions=x[0],
-                        input=x[1],
-                        reasoning={"effort": Config.REASONING_EFFORT},
-                        text={"verbosity": Config.VERBOSITY}
-                    ).output_text, calls))
-                return results
-        else:
-            return loop.run_until_complete(run_all())
-    except RuntimeError:
-        # No event loop, create one
-        return asyncio.run(run_all())
 
 
 class RAGState(TypedDict):
@@ -119,16 +90,14 @@ class RAGWorkflow:
         # Create the graph with our state type
         workflow = StateGraph(RAGState)
         
-        # Add nodes
-        workflow.add_node("analyze_query", self._node_analyze_query)
-        workflow.add_node("rewrite_query", self._node_rewrite_query)
+        # Add nodes (analyze + rewrite combined into single node for performance)
+        workflow.add_node("analyze_and_rewrite", self._node_analyze_and_rewrite)
         workflow.add_node("retrieve", self._node_retrieve)
         workflow.add_node("grade_documents", self._node_grade_documents)
         workflow.add_node("generate_response", self._node_generate_response)
         
         # Define edges
-        workflow.add_edge("analyze_query", "rewrite_query")
-        workflow.add_edge("rewrite_query", "retrieve")
+        workflow.add_edge("analyze_and_rewrite", "retrieve")
         workflow.add_edge("retrieve", "grade_documents")
         
         # Conditional edge: after grading, either re-query or generate
@@ -136,7 +105,7 @@ class RAGWorkflow:
             "grade_documents",
             self._should_requery,
             {
-                "requery": "rewrite_query",  # Loop back to try again
+                "requery": "analyze_and_rewrite",  # Loop back to try again
                 "generate": "generate_response"  # Proceed to generation
             }
         )
@@ -144,107 +113,111 @@ class RAGWorkflow:
         workflow.add_edge("generate_response", END)
         
         # Set entry point
-        workflow.set_entry_point("analyze_query")
+        workflow.set_entry_point("analyze_and_rewrite")
         
         return workflow.compile()
     
     # ==================== NODE FUNCTIONS ====================
     
-    def _node_analyze_query(self, state: RAGState) -> Dict[str, Any]:
-        """Analyze the query to understand intent and complexity."""
+    def _node_analyze_and_rewrite(self, state: RAGState) -> Dict[str, Any]:
+        """
+        Combined node: Analyze query AND generate search variants in ONE LLM call.
+        This saves ~5-7 seconds compared to two separate calls.
+        """
+        _t0 = time.time()
         query = state["original_query"]
+        attempt = state.get("retrieval_attempts", 0)
         
-        prompt = f"""Analysiere die folgende Anfrage und bestimme:
-1. Query-Typ (factual, comparison, summary, analysis, recommendation, creative)
-2. Schlüssel-Entitäten/Themen
-3. Komplexität (simple, moderate, complex)
-4. Erwartetes Antwortformat
+        # On re-query attempts, ask for alternative formulations
+        if attempt > 0:
+            rewrite_instruction = "Generiere ALTERNATIVE Formulierungen, die andere Aspekte betonen."
+        else:
+            rewrite_instruction = "Generiere Varianten mit Synonymen und unterschiedlichen Perspektiven."
+        
+        prompt = f"""Analysiere die folgende Anfrage und generiere Such-Varianten.
 
 Anfrage: "{query}"
 
-Antworte NUR mit einem JSON-Objekt:
+Aufgaben:
+1. Bestimme Query-Typ (factual, comparison, summary, analysis) und Komplexität (simple, moderate, complex)
+2. Generiere 3-5 Such-Varianten für besseres Retrieval
+   - WICHTIG: Bei MEHREREN Aspekten/Themen erstelle für JEDEN eine separate Query!
+   - {rewrite_instruction}
+
+Beispiel für Multi-Aspekt-Anfrage:
+- Anfrage: "Vergleiche LOM und IMS LD"
+- Queries: ["LOM Eigenschaften", "IMS LD Eigenschaften", "LOM vs IMS LD", "Unterschiede LOM IMS LD"]
+
+Antworte NUR mit diesem JSON-Format:
 {{
-    "query_type": "...",
-    "entities": ["...", "..."],
-    "complexity": "...",
-    "response_format": "...",
-    "keywords": ["...", "..."]
+    "query_type": "factual|comparison|summary|analysis",
+    "complexity": "simple|moderate|complex",
+    "queries": ["Variante 1", "Variante 2", "Variante 3"]
 }}"""
         
         try:
-            response = _client.responses.create(
-                model=Config.OPENAI_MODEL,
-                instructions="Du bist ein Query-Analyse-Experte. Antworte nur mit validem JSON.",
-                input=prompt,
-                reasoning={"effort": Config.REASONING_EFFORT},
-                text={"verbosity": Config.VERBOSITY}
+            result_text = _llm_call(
+                "Du bist ein Such-Experte. Antworte nur mit validem JSON.",
+                prompt
             )
             
-            analysis = json.loads(response.output_text.strip())
-        except Exception as e:
+            result = json.loads(result_text.strip())
+            
+            # Extract analysis
             analysis = {
-                "query_type": "unknown",
-                "entities": [],
-                "complexity": "moderate",
-                "response_format": "text",
+                "query_type": result.get("query_type", "factual"),
+                "complexity": result.get("complexity", "moderate"),
                 "keywords": query.split()[:5]
             }
-        
-        return {
-            "query_analysis": analysis,
-            "workflow_log": [f"[Analyze] Query type: {analysis.get('query_type', 'unknown')}, Complexity: {analysis.get('complexity', 'unknown')}"]
-        }
-    
-    def _node_rewrite_query(self, state: RAGState) -> Dict[str, Any]:
-        """Rewrite query into multiple variations for better retrieval."""
-        query = state["original_query"]
-        analysis = state.get("query_analysis", {})
-        attempt = state.get("retrieval_attempts", 0)
-        
-        # On re-query attempts, be more creative with variations
-        if attempt > 0:
-            instruction = "Generiere ALTERNATIVE Formulierungen, die andere Aspekte der Frage betonen."
-        else:
-            instruction = "Generiere Varianten mit Synonymen und unterschiedlichen Perspektiven."
-        
-        prompt = f"""Generiere verschiedene Such-Queries für die folgende Anfrage.
-
-WICHTIG: Wenn die Anfrage MEHRERE Aspekte/Themen enthält, erstelle für JEDEN Aspekt eine separate Query!
-
-Beispiel:
-- Anfrage: "Gib mir eine Übersicht der Relationen für LOM und IMS LD"
-- Queries: ["Relationen für LOM", "Relationen für IMS LD", "LOM Beziehungen", "IMS LD Beziehungen"]
-
-Original-Anfrage: "{query}"
-Schlüsselwörter aus Analyse: {analysis.get('keywords', [])}
-
-{instruction}
-
-Antworte NUR mit einem JSON-Array von 3-5 Strings:
-["Query 1", "Query 2", ...]"""
-        
-        try:
-            response = _client.responses.create(
-                model=Config.OPENAI_MODEL,
-                instructions="Du bist ein Query-Rewriting-Experte. Antworte nur mit einem JSON-Array.",
-                input=prompt,
-                reasoning={"effort": Config.REASONING_EFFORT},
-                text={"verbosity": Config.VERBOSITY}
-            )
             
-            rewritten = json.loads(response.output_text.strip())
-            # Always include original query + up to 5 variants
-            rewritten = [query] + rewritten[:5]
+            # Extract and prepare queries (always include original)
+            rewritten = result.get("queries", [])
+            rewritten = [query] + [q for q in rewritten[:5] if q != query]
+            
         except Exception as e:
+            # Fallback: use simple heuristics
+            analysis = self._fallback_analysis(query)
             rewritten = [query]
         
+        _elapsed = time.time() - _t0
         return {
+            "query_analysis": analysis,
             "rewritten_queries": rewritten,
-            "workflow_log": [f"[Rewrite] Generated {len(rewritten)} query variants"]
+            "workflow_log": [f"[Analyze+Rewrite] {_elapsed:.1f}s - {analysis.get('query_type')}/{analysis.get('complexity')}, {len(rewritten)} variants"]
+        }
+    
+    def _fallback_analysis(self, query: str) -> Dict[str, Any]:
+        """Fast heuristic fallback if LLM call fails."""
+        query_lower = query.lower()
+        
+        # Determine query type
+        if any(w in query_lower for w in ['vergleich', 'unterschied', 'vs', 'versus']):
+            query_type = "comparison"
+        elif any(w in query_lower for w in ['zusammenfassung', 'überblick', 'übersicht']):
+            query_type = "summary"
+        elif any(w in query_lower for w in ['analysiere', 'analyse', 'untersuche']):
+            query_type = "analysis"
+        else:
+            query_type = "factual"
+        
+        # Determine complexity
+        word_count = len(query.split())
+        if word_count <= 5:
+            complexity = "simple"
+        elif ' und ' in query_lower or word_count > 15:
+            complexity = "complex"
+        else:
+            complexity = "moderate"
+        
+        return {
+            "query_type": query_type,
+            "complexity": complexity,
+            "keywords": query.split()[:5]
         }
     
     def _node_retrieve(self, state: RAGState) -> Dict[str, Any]:
         """Retrieve documents using hybrid search with all query variants."""
+        _t0 = time.time()
         queries = state.get("rewritten_queries", [state["original_query"]])
         analysis = state.get("query_analysis", {})
         include_confluence = state.get("include_confluence", False)
@@ -307,12 +280,19 @@ Antworte NUR mit einem JSON-Array von 3-5 Strings:
                 for future in as_completed(futures):
                     confluence_docs = future.result()
                     for doc in confluence_docs:
+                        # Validate Confluence result: skip empty or invalid entries
+                        doc_text = doc.get("text", "").strip()
+                        if not doc_text or len(doc_text) < 20:
+                            continue
+                        page_id = doc.get('metadata', {}).get('page_id', '')
+                        if not page_id:
+                            continue
                         # Create unique ID for Confluence docs
-                        doc_id = f"confluence_{doc.get('metadata', {}).get('page_id', '')}"
+                        doc_id = f"confluence_{page_id}"
                         if doc_id not in all_results:
                             all_results[doc_id] = {
                                 "id": doc_id,
-                                "text": doc.get("text", ""),
+                                "text": doc_text,
                                 "metadata": doc.get("metadata", {}),
                                 "rrf_score": 0.5,  # Base score for Confluence docs
                                 "source_type": "confluence"
@@ -329,7 +309,8 @@ Antworte NUR mit einem JSON-Array von 3-5 Strings:
             reverse=True
         )[:top_k]
         
-        log_msg = f"[Retrieve] Found {len(sorted_results)} documents using {len(queries)} query variants"
+        _elapsed = time.time() - _t0
+        log_msg = f"[Retrieve] {_elapsed:.1f}s - Found {len(sorted_results)} documents using {len(queries)} query variants"
         if confluence_count > 0:
             log_msg += f" (+{confluence_count} from Confluence)"
         
@@ -347,6 +328,7 @@ Antworte NUR mit einem JSON-Array von 3-5 Strings:
         Rerank documents using Cross-Encoder (no filtering, just reordering).
         Original CRAG filtering was too aggressive - now we keep all docs but reorder them.
         """
+        _t0 = time.time()
         query = state["original_query"]
         docs = state.get("retrieved_docs", [])
         
@@ -374,14 +356,16 @@ Antworte NUR mit einem JSON-Array von 3-5 Strings:
             "needs_web_search": False
         }
         
+        _elapsed = time.time() - _t0
         return {
             "grading_results": grading_results,
             "needs_requery": False,
-            "workflow_log": [f"[Rerank] Reranked {len(reranked_docs)} documents using Cross-Encoder"]
+            "workflow_log": [f"[Rerank] {_elapsed:.1f}s - Reranked {len(reranked_docs)} documents using Cross-Encoder"]
         }
     
     def _node_generate_response(self, state: RAGState) -> Dict[str, Any]:
         """Generate final response using graded documents."""
+        _t0 = time.time()
         query = state["original_query"]
         grading_results = state.get("grading_results", {})
         analysis = state.get("query_analysis", {})
@@ -456,22 +440,15 @@ WICHTIG: Falls die Frage mehrere Aspekte enthält, gehe auf JEDEN Aspekt ein und
 {length_instruction}"""
         
         try:
-            response = _client.responses.create(
-                model=Config.OPENAI_MODEL,
-                instructions=system_prompt,
-                input=user_prompt,
-                reasoning={"effort": Config.REASONING_EFFORT},
-                text={"verbosity": Config.VERBOSITY}
-            )
-            
-            answer = response.output_text
+            answer = _llm_call(system_prompt, user_prompt)
         except Exception as e:
             answer = f"Fehler bei der Antwortgenerierung: {str(e)}"
         
+        _elapsed = time.time() - _t0
         return {
             "response": answer,
             "sources": sources,
-            "workflow_log": [f"[Generate] Response generated using {len(docs)} documents"]
+            "workflow_log": [f"[Generate] {_elapsed:.1f}s - Response generated using {len(docs)} documents"]
         }
     
     # ==================== CONDITIONAL EDGES ====================
@@ -513,7 +490,16 @@ WICHTIG: Falls die Frage mehrere Aspekte enthält, gehe auf JEDEN Aspekt ein und
         }
         
         # Execute the graph
+        _total_t0 = time.time()
         final_state = self.graph.invoke(initial_state)
+        _total_elapsed = time.time() - _total_t0
+        
+        # Log total time
+        print(f"\n{'='*60}")
+        print(f"WORKFLOW TIMING SUMMARY (total: {_total_elapsed:.1f}s)")
+        for log_entry in final_state.get('workflow_log', []):
+            print(f"  {log_entry}")
+        print(f"{'='*60}\n")
         
         return {
             "answer": final_state.get("response", ""),

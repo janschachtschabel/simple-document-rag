@@ -4,6 +4,7 @@ import json
 from typing import Dict, Any, List
 from datetime import datetime
 import urllib.parse
+from config import Config
 
 # Configure Streamlit page
 st.set_page_config(
@@ -196,12 +197,14 @@ def generate_document(toc_entries: List[str], document_title: str) -> Dict[str, 
     except Exception as e:
         return {"error": str(e)}
 
-def generate_chapter(chapter_title: str, document_title: str) -> Dict[str, Any]:
+def generate_chapter(chapter_title: str, document_title: str, toc_entries: list = None) -> Dict[str, Any]:
     """Generate a single chapter."""
     try:
         # Normalize chapter title (replace unicode dashes with regular ones)
         clean_title = chapter_title.replace("‑", "-").replace("–", "-").replace("—", "-")
         payload = {"chapter_title": clean_title, "document_title": document_title}
+        if toc_entries:
+            payload["toc_entries"] = toc_entries
         response = requests.post(f"{API_BASE_URL}/generate-chapter", json=payload, timeout=600)
         result = response.json()
         # Ensure we have content even on partial success
@@ -666,9 +669,9 @@ def main():
                     
                     def gen_chapter(args):
                         idx, title = args
-                        return idx, generate_chapter(title, doc_title)
+                        return idx, generate_chapter(title, doc_title, toc_entries=toc_entries)
                     
-                    with ThreadPoolExecutor(max_workers=min(5, len(toc_entries))) as executor:
+                    with ThreadPoolExecutor(max_workers=min(Config.MAX_WORKERS, len(toc_entries))) as executor:
                         futures = {executor.submit(gen_chapter, (i, title)): i for i, title in enumerate(toc_entries)}
                         completed = 0
                         

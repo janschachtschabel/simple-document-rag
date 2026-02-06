@@ -1,4 +1,3 @@
-from openai import OpenAI
 from typing import Dict, Any, List, Optional, Tuple
 from enum import Enum
 import json
@@ -6,9 +5,7 @@ import re
 from datetime import datetime
 from retriever import SemanticRetriever
 from config import Config
-
-# Initialize OpenAI client
-_client = OpenAI(api_key=Config.OPENAI_API_KEY)
+from llm_client import client as _client, openai_retry as _openai_retry
 
 class QueryType(Enum):
     FACTUAL = "factual"
@@ -61,16 +58,16 @@ class QueryAgent:
         """
         try:
             prompt = f"""
-            Analyze the following query and determine:
-            1. Query type (factual, comparison, summary, analysis, recommendation, creative)
-            2. Key entities/topics mentioned
-            3. Required information type
-            4. Complexity level (simple, moderate, complex)
-            5. Expected response format
+            Analysiere die folgende Anfrage und bestimme:
+            1. Anfrage-Typ (factual, comparison, summary, analysis, recommendation, creative)
+            2. Wichtige Entitäten/Themen
+            3. Benötigter Informationstyp
+            4. Komplexitätsgrad (simple, moderate, complex)
+            5. Erwartetes Antwortformat
             
-            Query: "{query}"
+            Anfrage: "{query}"
             
-            Respond with a JSON object containing these fields:
+            Antworte mit einem JSON-Objekt:
             {{
                 "query_type": "...",
                 "entities": ["...", "..."],
@@ -81,13 +78,15 @@ class QueryAgent:
             }}
             """
             
-            response = _client.responses.create(
-                model=Config.OPENAI_MODEL,
-                instructions="You are a query analysis expert. Respond only with valid JSON.",
-                input=prompt,
-                reasoning={"effort": Config.REASONING_EFFORT},
-                text={"verbosity": Config.VERBOSITY}
-            )
+            response = _openai_retry(
+                lambda: _client.responses.create(
+                    model=Config.OPENAI_MODEL,
+                    instructions="Du bist ein Experte für Query-Analyse. Antworte nur mit validem JSON.",
+                    input=prompt,
+                    reasoning={"effort": Config.REASONING_EFFORT},
+                    text={"verbosity": Config.VERBOSITY}
+                )
+            )()
             
             analysis_text = response.output_text.strip()
             
@@ -119,24 +118,25 @@ class QueryAgent:
         query_lower = query.lower()
         
         # Determine query type
-        if any(word in query_lower for word in ['what', 'who', 'when', 'where', 'how many']):
+        if any(word in query_lower for word in ['was', 'wer', 'wann', 'wo', 'wie viele', 'welche', 'what', 'who', 'when', 'where']):
             query_type = QueryType.FACTUAL.value
-        elif any(word in query_lower for word in ['compare', 'difference', 'versus', 'vs']):
+        elif any(word in query_lower for word in ['vergleich', 'unterschied', 'versus', 'vs', 'compare', 'difference']):
             query_type = QueryType.COMPARISON.value
-        elif any(word in query_lower for word in ['summarize', 'summary', 'overview']):
+        elif any(word in query_lower for word in ['zusammenfassung', 'überblick', 'übersicht', 'summarize', 'summary', 'overview']):
             query_type = QueryType.SUMMARY.value
-        elif any(word in query_lower for word in ['analyze', 'analysis', 'examine']):
+        elif any(word in query_lower for word in ['analysiere', 'analyse', 'untersuche', 'analyze', 'analysis']):
             query_type = QueryType.ANALYSIS.value
-        elif any(word in query_lower for word in ['recommend', 'should', 'best']):
+        elif any(word in query_lower for word in ['empfehlung', 'empfiehl', 'sollte', 'beste', 'recommend', 'should', 'best']):
             query_type = QueryType.RECOMMENDATION.value
-        elif any(word in query_lower for word in ['create', 'write', 'generate']):
+        elif any(word in query_lower for word in ['erstelle', 'schreibe', 'generiere', 'create', 'write', 'generate']):
             query_type = QueryType.CREATIVE.value
         else:
             query_type = QueryType.UNKNOWN.value
         
-        # Extract simple keywords
+        # Extract simple keywords (German + English stopwords)
         keywords = re.findall(r'\b\w+\b', query.lower())
-        keywords = [word for word in keywords if len(word) > 3 and word not in ['what', 'how', 'when', 'where', 'why', 'the', 'and', 'for', 'with']]
+        stopwords = ['was', 'wie', 'wann', 'wo', 'warum', 'der', 'die', 'das', 'und', 'für', 'mit', 'ein', 'eine', 'ist', 'sind', 'what', 'how', 'when', 'where', 'why', 'the', 'and', 'for', 'with']
+        keywords = [word for word in keywords if len(word) > 3 and word not in stopwords]
         
         return {
             "query_type": query_type,
@@ -258,17 +258,17 @@ class QueryAgent:
         Generate a factual response.
         """
         prompt = f"""
-        Based on the provided context, answer the following factual question accurately and concisely.
-        If the context doesn't contain the answer, say so clearly.
+        Beantworte die folgende Frage basierend auf dem bereitgestellten Kontext genau und präzise.
+        Wenn der Kontext die Antwort nicht enthält, sage das klar.
         
-        Question: {query}
+        Frage: {query}
         
-        Context:
+        Kontext:
         {context}
         
-        {f"Previous conversation:\n{conversation_context}" if conversation_context else ""}
+        {f"Vorheriges Gespräch:\n{conversation_context}" if conversation_context else ""}
         
-        Provide a direct, factual answer with citations to the sources.
+        Gib eine direkte, faktische Antwort mit Verweisen auf die Quellen.
         """
         
         return self._call_openai(prompt)
@@ -278,17 +278,17 @@ class QueryAgent:
         Generate a comparison response.
         """
         prompt = f"""
-        Based on the provided context, provide a detailed comparison addressing the question.
-        Highlight similarities and differences clearly.
+        Erstelle basierend auf dem bereitgestellten Kontext einen detaillierten Vergleich zur Frage.
+        Hebe Gemeinsamkeiten und Unterschiede klar hervor.
         
-        Question: {query}
+        Frage: {query}
         
-        Context:
+        Kontext:
         {context}
         
-        {f"Previous conversation:\n{conversation_context}" if conversation_context else ""}
+        {f"Vorheriges Gespräch:\n{conversation_context}" if conversation_context else ""}
         
-        Structure your response with clear comparison points and cite your sources.
+        Strukturiere deine Antwort mit klaren Vergleichspunkten und zitiere die Quellen.
         """
         
         return self._call_openai(prompt)
@@ -298,17 +298,17 @@ class QueryAgent:
         Generate a summary response.
         """
         prompt = f"""
-        Based on the provided context, provide a comprehensive summary addressing the request.
-        Include key points and main ideas.
+        Erstelle basierend auf dem bereitgestellten Kontext eine umfassende Zusammenfassung.
+        Nenne die wichtigsten Punkte und Kernaussagen.
         
-        Request: {query}
+        Anfrage: {query}
         
-        Context:
+        Kontext:
         {context}
         
-        {f"Previous conversation:\n{conversation_context}" if conversation_context else ""}
+        {f"Vorheriges Gespräch:\n{conversation_context}" if conversation_context else ""}
         
-        Create a well-structured summary with the most important information.
+        Erstelle eine gut strukturierte Zusammenfassung mit den wichtigsten Informationen.
         """
         
         return self._call_openai(prompt)
@@ -318,17 +318,17 @@ class QueryAgent:
         Generate an analytical response.
         """
         prompt = f"""
-        Based on the provided context, provide a detailed analysis addressing the question.
-        Include insights, patterns, and deeper understanding.
+        Erstelle basierend auf dem bereitgestellten Kontext eine detaillierte Analyse zur Frage.
+        Berücksichtige Erkenntnisse, Muster und tiefergehende Zusammenhänge.
         
-        Question: {query}
+        Frage: {query}
         
-        Context:
+        Kontext:
         {context}
         
-        {f"Previous conversation:\n{conversation_context}" if conversation_context else ""}
+        {f"Vorheriges Gespräch:\n{conversation_context}" if conversation_context else ""}
         
-        Provide an analytical response with evidence from the sources.
+        Liefere eine analytische Antwort mit Belegen aus den Quellen.
         """
         
         return self._call_openai(prompt)
@@ -338,17 +338,17 @@ class QueryAgent:
         Generate a recommendation response.
         """
         prompt = f"""
-        Based on the provided context, provide recommendations addressing the question.
-        Consider pros, cons, and alternatives.
+        Gib basierend auf dem bereitgestellten Kontext Empfehlungen zur Frage.
+        Berücksichtige Vor- und Nachteile sowie Alternativen.
         
-        Question: {query}
+        Frage: {query}
         
-        Context:
+        Kontext:
         {context}
         
-        {f"Previous conversation:\n{conversation_context}" if conversation_context else ""}
+        {f"Vorheriges Gespräch:\n{conversation_context}" if conversation_context else ""}
         
-        Provide well-reasoned recommendations with supporting evidence.
+        Liefere gut begründete Empfehlungen mit Belegen.
         """
         
         return self._call_openai(prompt)
@@ -358,17 +358,17 @@ class QueryAgent:
         Generate a creative response.
         """
         prompt = f"""
-        Based on the provided context, create content addressing the request.
-        Be creative while staying grounded in the source material.
+        Erstelle basierend auf dem bereitgestellten Kontext kreativen Inhalt zur Anfrage.
+        Sei kreativ, bleibe aber bei den Quellen.
         
-        Request: {query}
+        Anfrage: {query}
         
-        Context:
+        Kontext:
         {context}
         
-        {f"Previous conversation:\n{conversation_context}" if conversation_context else ""}
+        {f"Vorheriges Gespräch:\n{conversation_context}" if conversation_context else ""}
         
-        Generate creative content that incorporates information from the sources.
+        Generiere kreativen Inhalt, der Informationen aus den Quellen einbezieht.
         """
         
         return self._call_openai(prompt)
@@ -378,16 +378,16 @@ class QueryAgent:
         Generate a general response.
         """
         prompt = f"""
-        Based on the provided context, provide a helpful response to the question.
+        Beantworte basierend auf dem bereitgestellten Kontext die folgende Frage hilfreich.
         
-        Question: {query}
+        Frage: {query}
         
-        Context:
+        Kontext:
         {context}
         
-        {f"Previous conversation:\n{conversation_context}" if conversation_context else ""}
+        {f"Vorheriges Gespräch:\n{conversation_context}" if conversation_context else ""}
         
-        Provide a comprehensive and helpful response with citations.
+        Gib eine umfassende und hilfreiche Antwort mit Quellenverweisen.
         """
         
         return self._call_openai(prompt)
@@ -397,18 +397,20 @@ class QueryAgent:
         Call OpenAI API to generate response.
         """
         try:
-            response = _client.responses.create(
-                model=Config.OPENAI_MODEL,
-                instructions="You are a helpful AI assistant that provides accurate, well-sourced responses based on the provided context.",
-                input=prompt,
-                reasoning={"effort": Config.REASONING_EFFORT},
-                text={"verbosity": Config.VERBOSITY}
-            )
+            response = _openai_retry(
+                lambda: _client.responses.create(
+                    model=Config.OPENAI_MODEL,
+                    instructions="Du bist ein hilfreicher KI-Assistent, der genaue, quellenbasierte Antworten auf Basis des bereitgestellten Kontexts gibt.",
+                    input=prompt,
+                    reasoning={"effort": Config.REASONING_EFFORT},
+                    text={"verbosity": Config.VERBOSITY}
+                )
+            )()
             
             return response.output_text.strip()
             
         except Exception as e:
-            return f"I apologize, but I encountered an error while generating the response: {str(e)}"
+            return f"Es ist ein Fehler bei der Antwortgenerierung aufgetreten: {str(e)}"
     
     def _extract_sources(self, retrieved_docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """

@@ -1,15 +1,13 @@
 from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from openai import OpenAI
 from rank_bm25 import BM25Okapi
 from vector_db import VectorDatabase
 from embeddings import EmbeddingEngine
 from config import Config
-
-# Initialize OpenAI client
-_client = OpenAI(api_key=Config.OPENAI_API_KEY)
+from llm_client import client as _client, openai_retry as _openai_retry
 
 # Cross-Encoder for fast reranking (German support)
 try:
@@ -39,6 +37,8 @@ class SemanticRetriever:
         self._bm25_index = None
         self._bm25_docs = None
         self._bm25_doc_ids = None
+        # Build BM25 index once at startup
+        self._build_bm25_index()
     
     def expand_with_neighbors(self, documents: List[Dict[str, Any]], window: int = 1) -> List[Dict[str, Any]]:
         """
@@ -289,13 +289,15 @@ class SemanticRetriever:
             Return only the ranking numbers (e.g., "3,1,4,2") without any explanation.
             """
             
-            response = _client.responses.create(
-                model=Config.OPENAI_MODEL,
-                instructions="You are a helpful assistant that ranks documents by relevance.",
-                input=prompt,
-                reasoning={"effort": Config.REASONING_EFFORT},
-                text={"verbosity": Config.VERBOSITY}
-            )
+            response = _openai_retry(
+                lambda: _client.responses.create(
+                    model=Config.OPENAI_MODEL,
+                    instructions="Du bist ein hilfreicher Assistent, der Dokumente nach Relevanz sortiert.",
+                    input=prompt,
+                    reasoning={"effort": Config.REASONING_EFFORT},
+                    text={"verbosity": Config.VERBOSITY}
+                )
+            )()
             
             ranking_text = response.output_text.strip()
             rankings = [int(x.strip()) - 1 for x in ranking_text.split(',')]
@@ -500,9 +502,16 @@ class SemanticRetriever:
         """
         top_k = top_k or Config.TOP_K_RETRIEVAL
         
-        # Get results from both methods
-        semantic_results = self.retrieve(query, top_k=top_k * 3)
-        keyword_results = self._keyword_search(query, top_k=top_k * 3)
+        # Get results from both methods IN PARALLEL
+        _t0 = time.time()
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            sem_future = executor.submit(self.retrieve, query, top_k * 3)
+            bm25_future = executor.submit(self._keyword_search, query, top_k * 3)
+            semantic_results = sem_future.result()
+            keyword_results = bm25_future.result()
+        _t_total = time.time() - _t0
+        
+        print(f"  [RRF] parallel={_t_total:.2f}s, top_k={top_k}, sem={len(semantic_results)}, bm25={len(keyword_results)}")
         
         # Calculate RRF scores
         rrf_scores = {}
@@ -609,13 +618,15 @@ Bewerte mit einer der folgenden Kategorien:
 Antworte NUR mit einem JSON-Objekt:
 {{"grade": "relevant|ambiguous|irrelevant", "confidence": 0.0-1.0, "reason": "kurze Begründung"}}"""
 
-            response = _client.responses.create(
-                model=Config.OPENAI_MODEL,
-                instructions="Du bist ein Experte für Dokumentenrelevanz-Bewertung. Antworte nur mit validem JSON.",
-                input=prompt,
-                reasoning={"effort": Config.REASONING_EFFORT},
-                text={"verbosity": Config.VERBOSITY}
-            )
+            response = _openai_retry(
+                lambda: _client.responses.create(
+                    model=Config.OPENAI_MODEL,
+                    instructions="Du bist ein Experte für Dokumentenrelevanz-Bewertung. Antworte nur mit validem JSON.",
+                    input=prompt,
+                    reasoning={"effort": Config.REASONING_EFFORT},
+                    text={"verbosity": Config.VERBOSITY}
+                )
+            )()
             
             import json
             result = json.loads(response.output_text.strip())

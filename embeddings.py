@@ -1,5 +1,7 @@
 from openai import OpenAI
 import numpy as np
+from functools import lru_cache
+import hashlib
 from sentence_transformers import SentenceTransformer
 from typing import List, Union
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -7,6 +9,10 @@ from config import Config
 
 # Batch size for parallel embedding (OpenAI limit is ~2048 texts per call)
 EMBEDDING_BATCH_SIZE = 100
+
+# Global embedding cache (query text -> embedding as bytes)
+_embedding_cache = {}
+_CACHE_MAX_SIZE = 1000
 
 class EmbeddingEngine:
     def __init__(self, model_name: str = None):
@@ -26,7 +32,25 @@ class EmbeddingEngine:
             self._model = SentenceTransformer(self.model_name)
     
     def embed_text(self, text: Union[str, List[str]]) -> Union[np.ndarray, List[np.ndarray]]:
-        """Generate embeddings for text or list of texts."""
+        """Generate embeddings for text or list of texts (with cache for single strings)."""
+        # Cache single query embeddings to avoid repeated API calls
+        if isinstance(text, str):
+            cache_key = hashlib.md5(text.encode()).hexdigest()
+            if cache_key in _embedding_cache:
+                return _embedding_cache[cache_key]
+            
+            if self.model_type == "openai":
+                result = self._embed_openai(text)
+            else:
+                result = self._embed_sentence_transformer(text)
+            
+            # Evict oldest if cache full
+            if len(_embedding_cache) >= _CACHE_MAX_SIZE:
+                oldest_key = next(iter(_embedding_cache))
+                del _embedding_cache[oldest_key]
+            _embedding_cache[cache_key] = result
+            return result
+        
         if self.model_type == "openai":
             return self._embed_openai(text)
         else:
@@ -84,7 +108,7 @@ class EmbeddingEngine:
     def get_embedding_dimension(self) -> int:
         """Get the dimension of the embedding vectors."""
         if self.model_type == "openai":
-            # OpenAI text-embedding-ada-002 returns 1536 dimensions
+            # text-embedding-3-small returns 1536 dimensions by default
             return 1536
         else:
             return self._model.get_sentence_embedding_dimension()
