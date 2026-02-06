@@ -423,20 +423,24 @@ Antworte NUR mit diesem JSON-Format:
         length_instruction = length_instructions.get(response_length, length_instructions["normal"])
         
         system_prompt = f"""Du bist ein hilfreicher Assistent, der Fragen basierend auf bereitgestellten Dokumenten beantwortet.
+
+Richtlinien:
 - Antworte NUR basierend auf den bereitgestellten Dokumenten
 - Wenn die Dokumente keine Antwort enthalten, sage das ehrlich
 - Zitiere relevante Teile der Dokumente
-- WICHTIG: Wenn die Frage mehrere Aspekte oder Teilfragen enthält, beantworte JEDEN Aspekt einzeln und strukturiert
-- Query-Typ: {query_type}
-- {length_instruction}"""
+- Wenn die Frage mehrere Aspekte enthält, gehe auf jeden ein
+
+Format: Schreibe in gut lesbarem Fließtext mit klaren Absätzen. Verwende Aufzählungen nur sparsam, wenn sie wirklich die Lesbarkeit verbessern.
+
+Query-Typ: {query_type}
+{length_instruction}"""
         
         user_prompt = f"""DOKUMENTE:
 {context}
 
 FRAGE: {query}
 
-Bitte beantworte die Frage basierend auf den obigen Dokumenten.
-WICHTIG: Falls die Frage mehrere Aspekte enthält, gehe auf JEDEN Aspekt ein und strukturiere deine Antwort entsprechend.
+Bitte beantworte die Frage basierend auf den obigen Dokumenten in gut lesbarem Fließtext.
 {length_instruction}"""
         
         try:
